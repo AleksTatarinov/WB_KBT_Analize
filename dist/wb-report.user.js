@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WB Logistics Finished Shipments Report
 // @namespace    https://logistics.wildberries.ru/
-// @version      1.0.10
+// @version      1.0.11
 // @description  Отчет по завершенным рейсам WB Logistics с группировкой по водителям и экспортом CSV.
 // @author       Codex
 // @match        https://logistics.wildberries.ru/*
@@ -17,11 +17,21 @@
   "use strict";
 
   const API_URL = "https://drive.wb.ru/client-gateway/courier/api/v1/admin/shipments/finished/list";
-  const SCRIPT_VERSION = "1.0.10";
+  const SCRIPT_VERSION = "1.0.11";
   const PAGE_LIMIT = 200;
   const DETAILS_DEBUG_LIMIT = 100;
   const BUTTON_ID = "wb-report-open-button";
   const ROOT_ID = "wb-report-root";
+  const STATUS_LABELS = {
+    ROUTE_POINT_ACTION_STATUS_DONE: "Выполнено",
+    ROUTE_POINT_ACTION_STATUS_CANCELED: "Отменено",
+    ROUTE_POINT_ACTION_STATUS_UNSPECIFIED: "Без статуса",
+    SELL_RESULT_SOLD: "Продано",
+    SELL_RESULT_REJECT: "Отказ",
+    SELL_RESULT_REJECT_WITHOUT_CODE: "Отказ без кода",
+    SELL_RESULT_UNSPECIFIED: "Без статуса",
+    RETURN_STATUS_UNSPECIFIED: "Без возврата",
+  };
 
   let state = {
     rows: [],
@@ -217,6 +227,71 @@
     }
     .wb-report-table tr:last-child td { border-bottom: 0; }
     .wb-report-num { text-align: right !important; }
+    .wb-report-driver-list {
+      display: grid;
+      gap: 10px;
+    }
+    .wb-report-driver {
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      background: #fff;
+      overflow: hidden;
+    }
+    .wb-report-driver summary {
+      display: grid;
+      grid-template-columns: 18px minmax(220px, 1.6fr) repeat(5, minmax(88px, 1fr));
+      gap: 12px;
+      align-items: center;
+      padding: 12px 14px;
+      background: #f9fafb;
+      cursor: pointer;
+      list-style: none;
+    }
+    .wb-report-driver summary::-webkit-details-marker { display: none; }
+    .wb-report-driver summary::marker { content: ""; }
+    .wb-report-driver summary::before {
+      content: "›";
+      color: #6b7280;
+      font-size: 20px;
+      font-weight: 800;
+      transform: rotate(0deg);
+      transition: transform .15s ease;
+    }
+    .wb-report-driver[open] summary::before { transform: rotate(90deg); }
+    .wb-report-driver-main {
+      min-width: 0;
+      font-weight: 800;
+      color: #111827;
+    }
+    .wb-report-driver-phone {
+      margin-top: 2px;
+      color: #6b7280;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .wb-report-driver-metric {
+      color: #111827;
+      font-weight: 800;
+      text-align: right;
+    }
+    .wb-report-driver-metric span {
+      display: block;
+      margin-bottom: 2px;
+      color: #6b7280;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .wb-report-driver-body {
+      padding: 12px 14px 14px;
+      border-top: 1px solid #e5e7eb;
+    }
+    .wb-report-trip-status {
+      max-width: 260px;
+      white-space: normal !important;
+      color: #374151;
+      font-size: 12px;
+    }
     .wb-report-empty {
       padding: 28px;
       border: 1px dashed #d1d5db;
@@ -227,6 +302,9 @@
     @media (max-width: 900px) {
       .wb-report-modal { inset: 10px; }
       .wb-report-summary { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+      .wb-report-driver summary { grid-template-columns: 1fr; }
+      .wb-report-driver summary::before { display: none; }
+      .wb-report-driver-metric { text-align: left; }
       .wb-report-header,
       .wb-report-controls { padding: 12px; }
       .wb-report-content { padding: 12px; }
@@ -1083,12 +1161,14 @@
         deliveries: 0,
         returns: 0,
         averageTrip: 0,
+        tripRows: [],
       };
       current.trips += 1;
       current.amount += row.amount;
       current.deliveries += row.deliveries;
       current.returns += row.returns;
       current.averageTrip = current.trips ? current.amount / current.trips : 0;
+      current.tripRows.push(row);
       map.set(key, current);
     }
 
@@ -1117,6 +1197,59 @@
     });
   }
 
+  function buildDetailsById() {
+    return new Map(state.detailsDebug.map((detail) => [String(detail.id), detail]));
+  }
+
+  function buildDriverDetailSummary(rows, detailsById) {
+    return rows.reduce((result, row) => {
+      const detail = detailsById.get(String(row.id));
+      const summary = detail && detail.summary ? detail.summary : {};
+      result.deliveryPackages += Number(summary.deliveryPackagesCount) || row.deliveries || 0;
+      result.returnPackages += Number(summary.returnPackagesCount) || row.returns || 0;
+      return result;
+    }, {
+      deliveryPackages: 0,
+      returnPackages: 0,
+    });
+  }
+
+  function buildTripTiming(row, detail) {
+    const packages = detail && detail.response ? flattenLoadingPointsPackages(detail.response) : [];
+    return {
+      loadingAt: earliestDate(packages, "loading_date") || row.startedAt,
+      lastUnloadingAt: latestDate(packages, "unloading_date") || row.finishedAt,
+    };
+  }
+
+  function earliestDate(rows, field) {
+    return pickExtremeDate(rows, field, (current, next) => next < current);
+  }
+
+  function latestDate(rows, field) {
+    return pickExtremeDate(rows, field, (current, next) => next > current);
+  }
+
+  function pickExtremeDate(rows, field, shouldReplace) {
+    let result = "";
+    let resultTime = 0;
+
+    for (const row of rows) {
+      const raw = row && row[field];
+      if (!raw || /^0001-01-01T00:00:00Z$/i.test(String(raw))) continue;
+
+      const time = new Date(raw).getTime();
+      if (!Number.isFinite(time)) continue;
+
+      if (!result || shouldReplace(resultTime, time)) {
+        result = raw;
+        resultTime = time;
+      }
+    }
+
+    return result;
+  }
+
   function renderReport() {
     const content = document.getElementById("wb-report-content");
     const summary = state.summary || buildSummary([]);
@@ -1138,11 +1271,7 @@
       </div>
       <h3 class="wb-report-section-title">По водителям</h3>
       ${renderDriversTable(state.grouped)}
-      ${state.detailsDebug.length ? `
-        <h3 class="wb-report-section-title">Детали заданий</h3>
-        ${renderDetailsSummary()}
-        ${renderDetailsTable(state.detailsDebug)}
-      ` : ""}
+      ${state.detailsDebug.length ? renderDetailsSummary() : ""}
       <h3 class="wb-report-section-title">Рейсы</h3>
       ${renderTripsTable(state.rows)}
     `;
@@ -1160,35 +1289,81 @@
   }
 
   function renderDriversTable(rows) {
+    const detailsById = buildDetailsById();
+
+    return `
+      <div class="wb-report-driver-list">
+        ${rows.map((row, index) => renderDriverSection(row, detailsById, index === 0)).join("")}
+      </div>
+    `;
+  }
+
+  function renderDriverSection(row, detailsById, isOpen) {
+    const detailSummary = buildDriverDetailSummary(row.tripRows || [], detailsById);
+
+    return `
+      <details class="wb-report-driver"${isOpen ? " open" : ""}>
+        <summary>
+          <div class="wb-report-driver-main">
+            ${escapeHtml(row.driverName)}
+            <div class="wb-report-driver-phone">${escapeHtml(row.driverPhone)}</div>
+          </div>
+          <div class="wb-report-driver-metric"><span>Рейсы</span>${formatNumber(row.trips)}</div>
+          <div class="wb-report-driver-metric"><span>Сумма</span>${formatMoney(row.amount)}</div>
+          <div class="wb-report-driver-metric"><span>Доставки</span>${formatNumber(detailSummary.deliveryPackages || row.deliveries)}</div>
+          <div class="wb-report-driver-metric"><span>Возвраты</span>${formatNumber(detailSummary.returnPackages || row.returns)}</div>
+          <div class="wb-report-driver-metric"><span>Средний рейс</span>${formatMoney(row.averageTrip)}</div>
+        </summary>
+        <div class="wb-report-driver-body">
+          ${renderDriverTripsTable(row.tripRows || [], detailsById)}
+        </div>
+      </details>
+    `;
+  }
+
+  function renderDriverTripsTable(rows, detailsById) {
     return `
       <div class="wb-report-table-wrap">
         <table class="wb-report-table">
           <thead>
             <tr>
-              <th>Водитель</th>
-              <th>Телефон</th>
-              <th class="wb-report-num">Рейсы</th>
+              <th>ID</th>
+              <th>Загрузка</th>
+              <th>Последняя выгрузка</th>
+              <th>Склад</th>
               <th class="wb-report-num">Сумма</th>
               <th class="wb-report-num">Доставки</th>
               <th class="wb-report-num">Возвраты</th>
-              <th class="wb-report-num">Средний рейс</th>
+              <th>Статусы доставок</th>
+              <th>Статусы продаж</th>
             </tr>
           </thead>
           <tbody>
-            ${rows.map((row) => `
-              <tr>
-                <td>${escapeHtml(row.driverName)}</td>
-                <td>${escapeHtml(row.driverPhone)}</td>
-                <td class="wb-report-num">${formatNumber(row.trips)}</td>
-                <td class="wb-report-num">${formatMoney(row.amount)}</td>
-                <td class="wb-report-num">${formatNumber(row.deliveries)}</td>
-                <td class="wb-report-num">${formatNumber(row.returns)}</td>
-                <td class="wb-report-num">${formatMoney(row.averageTrip)}</td>
-              </tr>
-            `).join("")}
+            ${rows.map((row) => renderDriverTripRow(row, detailsById.get(String(row.id)))).join("")}
           </tbody>
         </table>
       </div>
+    `;
+  }
+
+  function renderDriverTripRow(row, detail) {
+    const summary = detail && detail.summary ? detail.summary : {};
+    const timing = buildTripTiming(row, detail);
+    const deliveries = Number(summary.deliveryPackagesCount) || row.deliveries;
+    const returns = Number(summary.returnPackagesCount) || row.returns;
+
+    return `
+      <tr>
+        <td>${escapeHtml(row.id)}</td>
+        <td>${escapeHtml(formatDateTime(timing.loadingAt))}</td>
+        <td>${escapeHtml(formatDateTime(timing.lastUnloadingAt))}</td>
+        <td>${escapeHtml(joinCsvList(summary.loadingAddresses) || row.warehouse)}</td>
+        <td class="wb-report-num">${formatMoney(row.amount)}</td>
+        <td class="wb-report-num">${formatNumber(deliveries)}</td>
+        <td class="wb-report-num">${formatNumber(returns)}</td>
+        <td class="wb-report-trip-status">${escapeHtml(formatCountMap(summary.actionStatuses))}</td>
+        <td class="wb-report-trip-status">${escapeHtml(formatCountMap(summary.sellResults))}</td>
+      </tr>
     `;
   }
 
@@ -1457,7 +1632,7 @@
     if (!valueText || typeof valueText !== "object") return "";
     return Object.keys(valueText)
       .sort()
-      .map((key) => `${key}: ${valueText[key]}`)
+      .map((key) => `${STATUS_LABELS[key] || key}: ${valueText[key]}`)
       .join(" | ");
   }
 
