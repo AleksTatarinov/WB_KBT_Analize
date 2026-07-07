@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WB Logistics Finished Shipments Report
 // @namespace    https://logistics.wildberries.ru/
-// @version      1.0.12
+// @version      1.0.13
 // @description  Отчет по завершенным рейсам WB Logistics с группировкой по водителям и экспортом CSV.
 // @author       Codex
 // @match        https://logistics.wildberries.ru/*
@@ -17,7 +17,7 @@
   "use strict";
 
   const API_URL = "https://drive.wb.ru/client-gateway/courier/api/v1/admin/shipments/finished/list";
-  const SCRIPT_VERSION = "1.0.12";
+  const SCRIPT_VERSION = "1.0.13";
   const PAGE_LIMIT = 200;
   const DETAILS_DEBUG_LIMIT = 100;
   const BUTTON_ID = "wb-report-open-button";
@@ -634,7 +634,7 @@
       packagesCount: packages.length,
       soldPackagesCount: packages.filter((item) => item.sell_result === "SELL_RESULT_SOLD").length,
       deliveryPackagesCount: packages.filter((item) => item.courier_package_way_type === "COURIER_PACKAGE_WAY_TYPE_DELIVERY").length,
-      returnPackagesCount: packages.filter((item) => item.courier_package_way_type === "COURIER_PACKAGE_WAY_TYPE_RETURN").length,
+      returnPackagesCount: packages.filter(isPickedReturn).length,
       loadingAddresses,
       unloadingAddresses,
       packageWayTypes,
@@ -685,6 +685,14 @@
           }));
       });
     });
+  }
+
+  function isPickedReturn(item) {
+    return Boolean(
+      item &&
+      item.courier_package_way_type === "COURIER_PACKAGE_WAY_TYPE_RETURN" &&
+      item.return_result === "RETURN_STATUS_PICKED"
+    );
   }
 
   function addressText(routePoint) {
@@ -1318,8 +1326,8 @@
     return rows.reduce((result, row) => {
       const detail = detailsById.get(String(row.id));
       const summary = detail && detail.summary ? detail.summary : {};
-      result.deliveryPackages += Number(summary.deliveryPackagesCount) || row.deliveries || 0;
-      result.returnPackages += Number(summary.returnPackagesCount) || row.returns || 0;
+      result.deliveryPackages += detail ? Number(summary.deliveryPackagesCount) || 0 : row.deliveries || 0;
+      result.returnPackages += detail ? Number(summary.returnPackagesCount) || 0 : row.returns || 0;
       return result;
     }, {
       deliveryPackages: 0,
@@ -1494,8 +1502,8 @@
   function renderDriverTripRow(row, detail) {
     const summary = detail && detail.summary ? detail.summary : {};
     const timing = buildTripTiming(row, detail);
-    const deliveries = Number(summary.deliveryPackagesCount) || row.deliveries;
-    const returns = Number(summary.returnPackagesCount) || row.returns;
+    const deliveries = detail ? Number(summary.deliveryPackagesCount) || 0 : row.deliveries;
+    const returns = detail ? Number(summary.returnPackagesCount) || 0 : row.returns;
 
     return `
       <tr>
