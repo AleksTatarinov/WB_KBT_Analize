@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WB Logistics Finished Shipments Report
 // @namespace    https://logistics.wildberries.ru/
-// @version      1.0.5
+// @version      1.0.6
 // @description  Отчет по завершенным рейсам WB Logistics с группировкой по водителям и экспортом CSV.
 // @author       Codex
 // @match        https://logistics.wildberries.ru/*
@@ -17,7 +17,7 @@
   "use strict";
 
   const API_URL = "https://drive.wb.ru/client-gateway/courier/api/v1/admin/shipments/finished/list";
-  const SCRIPT_VERSION = "1.0.5";
+  const SCRIPT_VERSION = "1.0.6";
   const PAGE_LIMIT = 200;
   const BUTTON_ID = "wb-report-open-button";
   const ROOT_ID = "wb-report-root";
@@ -1083,6 +1083,9 @@
       capturedAuthHeaderNames: Object.keys(capturedAuthHeaders),
       lastError: state.debug.lastError,
       attempts: state.debug.attempts,
+      rowCount: state.rows.length,
+      normalizedRowsSample: state.rows.slice(0, 3).map(({ raw, ...row }) => row),
+      rawRowsSample: state.rows.slice(0, 3).map((row) => row.raw),
     };
     const text = JSON.stringify(debugInfo, null, 2);
 
