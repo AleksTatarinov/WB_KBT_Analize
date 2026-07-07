@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WB Logistics Finished Shipments Report
 // @namespace    https://logistics.wildberries.ru/
-// @version      1.0.7
+// @version      1.0.8
 // @description  Отчет по завершенным рейсам WB Logistics с группировкой по водителям и экспортом CSV.
 // @author       Codex
 // @match        https://logistics.wildberries.ru/*
@@ -17,8 +17,9 @@
   "use strict";
 
   const API_URL = "https://drive.wb.ru/client-gateway/courier/api/v1/admin/shipments/finished/list";
-  const SCRIPT_VERSION = "1.0.7";
+  const SCRIPT_VERSION = "1.0.8";
   const PAGE_LIMIT = 200;
+  const DETAILS_DEBUG_LIMIT = 10;
   const BUTTON_ID = "wb-report-open-button";
   const ROOT_ID = "wb-report-root";
 
@@ -27,6 +28,7 @@
     grouped: [],
     summary: null,
     loading: false,
+    detailsDebug: [],
     debug: {
       attempts: [],
       lastError: "",
@@ -272,6 +274,7 @@
           </label>
           <button class="wb-report-btn wb-report-btn-primary" type="button" id="wb-report-load">Сформировать</button>
           <button class="wb-report-btn" type="button" id="wb-report-export" disabled>Экспорт CSV</button>
+          <button class="wb-report-btn" type="button" id="wb-report-details-debug" disabled>Собрать детали</button>
           <button class="wb-report-btn" type="button" id="wb-report-debug">Скопировать отладку</button>
           <span class="wb-report-status" id="wb-report-status"></span>
         </div>
@@ -287,6 +290,7 @@
     });
     root.querySelector("#wb-report-load").addEventListener("click", loadReport);
     root.querySelector("#wb-report-export").addEventListener("click", exportCsv);
+    root.querySelector("#wb-report-details-debug").addEventListener("click", collectDetailsDebug);
     root.querySelector("#wb-report-debug").addEventListener("click", copyDebugInfo);
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && root.classList.contains("is-open")) closeModal();
@@ -327,6 +331,7 @@
       state.rows = rows.map(normalizeShipment);
       state.grouped = groupByDriver(state.rows);
       state.summary = buildSummary(state.rows);
+      state.detailsDebug = [];
       renderReport();
       setStatus(`Готово: ${formatNumber(state.rows.length)} рейсов.`);
     } catch (error) {
@@ -387,6 +392,79 @@
     }
 
     throw lastError || new Error("Не удалось подобрать формат тела запроса.");
+  }
+
+  async function collectDetailsDebug() {
+    if (!state.rows.length) {
+      setStatus("Сначала сформируйте отчет.");
+      return;
+    }
+
+    const rows = state.rows.filter((row) => row.id).slice(0, DETAILS_DEBUG_LIMIT);
+    if (!rows.length) {
+      setStatus("В рейсах нет ID заданий для загрузки деталей.");
+      return;
+    }
+
+    setDetailsDebugLoading(true);
+    state.detailsDebug = [];
+
+    try {
+      for (let index = 0; index < rows.length; index += 1) {
+        const row = rows[index];
+        setStatus(`Загружаю детали ${index + 1}/${rows.length}...`);
+        state.detailsDebug.push(await fetchShipmentLoadingPointsDebug(row));
+      }
+      setStatus(`Детали собраны: ${state.detailsDebug.length}. Нажмите "Скопировать отладку".`);
+    } catch (error) {
+      console.error("[WB Report]", error);
+      state.debug.lastError = error && error.message ? error.message : String(error);
+      setStatus("Ошибка загрузки деталей.");
+    } finally {
+      setDetailsDebugLoading(false);
+    }
+  }
+
+  async function fetchShipmentLoadingPointsDebug(row) {
+    const url = `${shipmentDetailsBaseUrl(row.id)}/loading-points`;
+    const payloads = [
+      { name: "no-body", value: undefined },
+      { name: "empty-object", value: {} },
+      { name: "data-meta-empty", value: { data: {}, meta: {} } },
+    ];
+    let lastError = "";
+
+    for (const payload of payloads) {
+      try {
+        const response = await postJson(url, payload.value);
+        return {
+          id: row.id,
+          driverName: row.driverName,
+          driverPhone: row.driverPhone,
+          url,
+          method: "POST",
+          payloadName: payload.name,
+          payload: payload.value ?? null,
+          response,
+        };
+      } catch (error) {
+        lastError = error && error.message ? error.message : String(error);
+        if (!isPayloadShapeError(error)) break;
+      }
+    }
+
+    return {
+      id: row.id,
+      driverName: row.driverName,
+      driverPhone: row.driverPhone,
+      url,
+      method: "POST",
+      error: lastError,
+    };
+  }
+
+  function shipmentDetailsBaseUrl(id) {
+    return `https://drive.wb.ru/client-gateway/courier/api/v1/admin/shipments/${encodeURIComponent(id)}`;
   }
 
   function buildPayloadBuilders() {
@@ -543,10 +621,9 @@
 
   function postJson(url, payload) {
     return new Promise((resolve, reject) => {
-      GM_xmlhttpRequest({
+      const request = {
         method: "POST",
         url,
-        data: JSON.stringify(payload),
         withCredentials: true,
         anonymous: false,
         headers: buildRequestHeaders(),
@@ -568,7 +645,9 @@
         ontimeout() {
           reject(new Error("Запрос к drive.wb.ru превысил таймаут."));
         },
-      });
+      };
+      if (payload !== undefined) request.data = JSON.stringify(payload);
+      GM_xmlhttpRequest(request);
     });
   }
 
@@ -930,6 +1009,7 @@
     if (!state.rows.length) {
       renderEmpty("За выбранный период рейсы не найдены.");
       setExportEnabled(false);
+      setDetailsDebugEnabled(false);
       return;
     }
 
@@ -947,6 +1027,7 @@
       ${renderTripsTable(state.rows)}
     `;
     setExportEnabled(true);
+    setDetailsDebugEnabled(true);
   }
 
   function renderStat(label, valueText) {
@@ -1110,6 +1191,9 @@
       rowCount: state.rows.length,
       normalizedRowsSample: state.rows.slice(0, 3).map(({ raw, ...row }) => row),
       rawRowsSample: state.rows.slice(0, 3).map((row) => row.raw),
+      detailsDebugLimit: DETAILS_DEBUG_LIMIT,
+      detailsDebugCount: state.detailsDebug.length,
+      detailsDebug: state.detailsDebug,
     };
     const text = JSON.stringify(debugInfo, null, 2);
 
@@ -1142,11 +1226,24 @@
       loadButton.textContent = isLoading ? "Загрузка..." : "Сформировать";
     }
     setExportEnabled(!isLoading && state.rows.length > 0);
+    setDetailsDebugEnabled(!isLoading && state.rows.length > 0);
+  }
+
+  function setDetailsDebugLoading(isLoading) {
+    const button = document.getElementById("wb-report-details-debug");
+    if (!button) return;
+    button.disabled = isLoading || !state.rows.length;
+    button.textContent = isLoading ? "Детали..." : "Собрать детали";
   }
 
   function setExportEnabled(enabled) {
     const exportButton = document.getElementById("wb-report-export");
     if (exportButton) exportButton.disabled = !enabled;
+  }
+
+  function setDetailsDebugEnabled(enabled) {
+    const button = document.getElementById("wb-report-details-debug");
+    if (button) button.disabled = !enabled;
   }
 
   function readArray(source, paths) {
