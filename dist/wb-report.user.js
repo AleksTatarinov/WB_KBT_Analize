@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WB Logistics Finished Shipments Report
 // @namespace    https://logistics.wildberries.ru/
-// @version      1.0.14
+// @version      1.0.15
 // @description  Отчет по завершенным рейсам WB Logistics с группировкой по водителям и экспортом CSV.
 // @author       Codex
 // @match        https://logistics.wildberries.ru/*
@@ -17,7 +17,7 @@
   "use strict";
 
   const API_URL = "https://drive.wb.ru/client-gateway/courier/api/v1/admin/shipments/finished/list";
-  const SCRIPT_VERSION = "1.0.14";
+  const SCRIPT_VERSION = "1.0.15";
   const PAGE_LIMIT = 200;
   const DETAILS_DEBUG_LIMIT = 100;
   const BUTTON_ID = "wb-report-open-button";
@@ -174,6 +174,51 @@
       grid-template-columns: repeat(5, minmax(120px, 1fr));
       gap: 10px;
       margin: 0 0 18px;
+    }
+    .wb-report-analytics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(180px, 1fr));
+      gap: 10px;
+      margin: 0 0 18px;
+    }
+    .wb-report-chart-card {
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 12px;
+      background: linear-gradient(180deg, #ffffff 0%, #f9fafb 100%);
+    }
+    .wb-report-chart-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .wb-report-chart-label {
+      color: #6b7280;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .wb-report-chart-value {
+      color: #111827;
+      font-size: 22px;
+      font-weight: 800;
+      line-height: 1.1;
+      text-align: right;
+    }
+    .wb-report-chart-svg {
+      display: block;
+      width: 100%;
+      height: 88px;
+      margin: 6px 0 8px;
+    }
+    .wb-report-chart-footer {
+      color: #6b7280;
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .wb-report-stat {
       border: 1px solid #e5e7eb;
@@ -371,6 +416,10 @@
       color: #374151;
       font-size: 12px;
     }
+    .wb-report-trip-conversion {
+      font-weight: 700;
+      color: #111827;
+    }
     .wb-report-empty {
       padding: 28px;
       border: 1px dashed #d1d5db;
@@ -381,6 +430,7 @@
     @media (max-width: 900px) {
       .wb-report-modal { inset: 10px; }
       .wb-report-summary { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+      .wb-report-analytics { grid-template-columns: repeat(1, minmax(0, 1fr)); }
       .wb-report-driver summary { grid-template-columns: 1fr; }
       .wb-report-driver summary::before { display: none; }
       .wb-report-driver-metric { text-align: left; }
@@ -1372,6 +1422,23 @@
     };
   }
 
+  function buildTripMetrics(row, detail) {
+    const summary = detail && detail.summary ? detail.summary : {};
+    const packagesCount = Number(summary.packagesCount) || 0;
+    const soldPackagesCount = Number(summary.soldPackagesCount) || 0;
+    const deliveries = detail ? Number(summary.deliveryPackagesCount) || 0 : row.deliveries;
+    const returns = detail ? Number(summary.returnPackagesCount) || 0 : row.returns;
+    const conversion = packagesCount ? soldPackagesCount / packagesCount : null;
+
+    return {
+      packagesCount,
+      soldPackagesCount,
+      deliveries,
+      returns,
+      conversion,
+    };
+  }
+
   function earliestDate(rows, field) {
     return pickExtremeDate(rows, field, (current, next) => next < current);
   }
@@ -1406,6 +1473,7 @@
     const filteredRows = getFilteredRows();
     const filteredDetails = getFilteredDetails();
     const summary = state.summary || buildSummary([]);
+    const detailsById = buildDetailsById();
 
     if (!state.rows.length) {
       renderEmpty("За выбранный период рейсы не найдены.");
@@ -1422,13 +1490,14 @@
         ${renderStat("Возвраты", formatNumber(summary.returns))}
         ${renderStat("Средний рейс", formatMoney(summary.averageTrip))}
       </div>
+      ${renderAnalyticsPanel(filteredRows, detailsById)}
       ${renderDriverFilter()}
       ${!filteredRows.length ? `<div class="wb-report-empty">Выберите хотя бы одного водителя.</div>` : `
       <h3 class="wb-report-section-title">По водителям</h3>
-      ${renderDriversTable(state.grouped)}
+      ${renderDriversTable(state.grouped, detailsById)}
       ${filteredDetails.length ? renderDetailsSummary(filteredDetails) : ""}
       <h3 class="wb-report-section-title">Рейсы</h3>
-      ${renderTripsTable(filteredRows)}
+      ${renderTripsTable(filteredRows, detailsById)}
       `}
     `;
     setExportEnabled(filteredRows.length > 0);
@@ -1442,6 +1511,123 @@
         <div class="wb-report-stat-value">${escapeHtml(valueText)}</div>
       </div>
     `;
+  }
+
+  function renderAnalyticsPanel(rows, detailsById) {
+    const series = buildAnalyticsSeries(rows, detailsById);
+    return `
+      <div class="wb-report-analytics">
+        ${renderChartCard("Рейсы", formatNumber(series.trips.total), series.trips.points, "#7c3aed", formatNumber)}
+        ${renderChartCard("Сумма", formatMoney(series.amount.total), series.amount.points, "#0f766e", formatMoney)}
+        ${renderChartCard("Доставки", formatNumber(series.deliveries.total), series.deliveries.points, "#2563eb", formatNumber)}
+        ${renderChartCard("Средний рейс", formatMoney(series.averageTrip.total), series.averageTrip.points, "#ea580c", formatMoney)}
+      </div>
+    `;
+  }
+
+  function renderChartCard(label, totalText, points, color, formatter) {
+    return `
+      <div class="wb-report-chart-card">
+        <div class="wb-report-chart-head">
+          <div class="wb-report-chart-label">${escapeHtml(label)}</div>
+          <div class="wb-report-chart-value">${escapeHtml(totalText)}</div>
+        </div>
+        ${buildChartSvg(points.map((point) => point.value), color)}
+        <div class="wb-report-chart-footer">${escapeHtml(buildChartFooter(points, formatter))}</div>
+      </div>
+    `;
+  }
+
+  function buildChartFooter(points, formatter) {
+    if (!points.length) return "Нет данных";
+    return points.map((point) => `${point.label}: ${formatter(point.value)}`).join(" | ");
+  }
+
+  function buildChartSvg(values, color) {
+    if (!values.length) {
+      return `<svg class="wb-report-chart-svg" viewBox="0 0 320 88" preserveAspectRatio="none" aria-hidden="true"></svg>`;
+    }
+
+    const width = 320;
+    const height = 88;
+    const maxValue = Math.max(...values, 1);
+    const step = values.length > 1 ? width / (values.length - 1) : 0;
+    const points = values.map((value, index) => {
+      const x = values.length === 1 ? width / 2 : index * step;
+      const y = height - (value / maxValue) * (height - 12) - 6;
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
+    });
+    const area = [`0,${height}`, ...points, `${width},${height}`].join(" ");
+
+    return `
+      <svg class="wb-report-chart-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
+        <polyline points="${area}" fill="${color}" fill-opacity="0.12" stroke="none"></polyline>
+        <polyline points="${points.join(" ")}" fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></polyline>
+      </svg>
+    `;
+  }
+
+  function buildAnalyticsSeries(rows, detailsById) {
+    const daily = new Map();
+
+    for (const row of rows) {
+      const detail = detailsById.get(String(row.id));
+      const metrics = buildTripMetrics(row, detail);
+      const key = tripDateKey(row, detail);
+      const current = daily.get(key) || {
+        label: formatDayMonth(key),
+        trips: 0,
+        amount: 0,
+        deliveries: 0,
+      };
+      current.trips += 1;
+      current.amount += Number(row.amount) || 0;
+      current.deliveries += metrics.deliveries;
+      daily.set(key, current);
+    }
+
+    const ordered = Array.from(daily.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([, item]) => item);
+
+    return {
+      trips: {
+        total: ordered.reduce((sumValue, item) => sumValue + item.trips, 0),
+        points: ordered.map((item) => ({ label: item.label, value: item.trips })),
+      },
+      amount: {
+        total: ordered.reduce((sumValue, item) => sumValue + item.amount, 0),
+        points: ordered.map((item) => ({ label: item.label, value: item.amount })),
+      },
+      deliveries: {
+        total: ordered.reduce((sumValue, item) => sumValue + item.deliveries, 0),
+        points: ordered.map((item) => ({ label: item.label, value: item.deliveries })),
+      },
+      averageTrip: {
+        total: rows.length ? rows.reduce((sumValue, row) => sumValue + (Number(row.amount) || 0), 0) / rows.length : 0,
+        points: ordered.map((item) => ({ label: item.label, value: item.trips ? item.amount / item.trips : 0 })),
+      },
+    };
+  }
+
+  function tripDateKey(row, detail) {
+    const timing = buildTripTiming(row, detail);
+    const source = timing.lastUnloadingAt || row.finishedAt || timing.loadingAt || row.startedAt;
+    return toDateKey(source);
+  }
+
+  function toDateKey(valueText) {
+    if (!valueText) return "0000-00-00";
+    const date = new Date(valueText);
+    if (Number.isNaN(date.getTime())) return "0000-00-00";
+    return date.toISOString().slice(0, 10);
+  }
+
+  function formatDayMonth(dateKey) {
+    if (!dateKey || dateKey === "0000-00-00") return "Без даты";
+    const date = new Date(`${dateKey}T00:00:00Z`);
+    if (Number.isNaN(date.getTime())) return dateKey;
+    return date.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" });
   }
 
   function renderDriverFilter() {
@@ -1470,9 +1656,7 @@
     `;
   }
 
-  function renderDriversTable(rows) {
-    const detailsById = buildDetailsById();
-
+  function renderDriversTable(rows, detailsById) {
     return `
       <div class="wb-report-driver-list">
         ${rows.map((row, index) => renderDriverSection(row, detailsById, index === 0)).join("")}
@@ -1516,6 +1700,7 @@
               <th class="wb-report-num">Сумма</th>
               <th class="wb-report-num">Доставки</th>
               <th class="wb-report-num">Возвраты</th>
+              <th class="wb-report-num">Конверсия</th>
               <th>Статусы доставок</th>
               <th>Статусы продаж</th>
             </tr>
@@ -1531,8 +1716,7 @@
   function renderDriverTripRow(row, detail) {
     const summary = detail && detail.summary ? detail.summary : {};
     const timing = buildTripTiming(row, detail);
-    const deliveries = detail ? Number(summary.deliveryPackagesCount) || 0 : row.deliveries;
-    const returns = detail ? Number(summary.returnPackagesCount) || 0 : row.returns;
+    const metrics = buildTripMetrics(row, detail);
 
     return `
       <tr>
@@ -1541,8 +1725,9 @@
         <td>${escapeHtml(formatDateTime(timing.lastUnloadingAt))}</td>
         <td>${escapeHtml(joinCsvList(summary.loadingAddresses) || row.warehouse)}</td>
         <td class="wb-report-num">${formatMoney(row.amount)}</td>
-        <td class="wb-report-num">${formatNumber(deliveries)}</td>
-        <td class="wb-report-num">${formatNumber(returns)}</td>
+        <td class="wb-report-num">${formatNumber(metrics.deliveries)}</td>
+        <td class="wb-report-num">${formatNumber(metrics.returns)}</td>
+        <td class="wb-report-num wb-report-trip-conversion">${escapeHtml(formatPercent(metrics.conversion))}</td>
         <td class="wb-report-trip-status">${escapeHtml(formatCountMap(summary.actionStatuses))}</td>
         <td class="wb-report-trip-status">${escapeHtml(formatCountMap(summary.sellResults))}</td>
       </tr>
@@ -1563,7 +1748,7 @@
     `;
   }
 
-  function renderTripsTable(rows) {
+  function renderTripsTable(rows, detailsById) {
     return `
       <div class="wb-report-table-wrap">
         <table class="wb-report-table">
@@ -1579,23 +1764,29 @@
               <th class="wb-report-num">Сумма</th>
               <th class="wb-report-num">Доставки</th>
               <th class="wb-report-num">Возвраты</th>
+              <th class="wb-report-num">Конверсия</th>
             </tr>
           </thead>
           <tbody>
-            ${rows.map((row) => `
-              <tr>
-                <td>${escapeHtml(row.id)}</td>
-                <td>${escapeHtml(row.driverName)}</td>
-                <td>${escapeHtml(row.driverPhone)}</td>
-                <td>${escapeHtml(formatDateTime(row.startedAt))}</td>
-                <td>${escapeHtml(formatDateTime(row.finishedAt))}</td>
-                <td>${escapeHtml(row.warehouse)}</td>
-                <td>${escapeHtml(row.status)}</td>
-                <td class="wb-report-num">${formatMoney(row.amount)}</td>
-                <td class="wb-report-num">${formatNumber(row.deliveries)}</td>
-                <td class="wb-report-num">${formatNumber(row.returns)}</td>
-              </tr>
-            `).join("")}
+            ${rows.map((row) => {
+              const detail = detailsById.get(String(row.id));
+              const metrics = buildTripMetrics(row, detail);
+              return `
+                <tr>
+                  <td>${escapeHtml(row.id)}</td>
+                  <td>${escapeHtml(row.driverName)}</td>
+                  <td>${escapeHtml(row.driverPhone)}</td>
+                  <td>${escapeHtml(formatDateTime(row.startedAt))}</td>
+                  <td>${escapeHtml(formatDateTime(row.finishedAt))}</td>
+                  <td>${escapeHtml(row.warehouse)}</td>
+                  <td>${escapeHtml(row.status)}</td>
+                  <td class="wb-report-num">${formatMoney(row.amount)}</td>
+                  <td class="wb-report-num">${formatNumber(metrics.deliveries)}</td>
+                  <td class="wb-report-num">${formatNumber(metrics.returns)}</td>
+                  <td class="wb-report-num wb-report-trip-conversion">${escapeHtml(formatPercent(metrics.conversion))}</td>
+                </tr>
+              `;
+            }).join("")}
           </tbody>
         </table>
       </div>
@@ -1612,6 +1803,7 @@
     const rows = getFilteredRows();
     const grouped = groupByDriver(rows);
     const details = getFilteredDetails();
+    const detailsById = buildDetailsById();
     if (!rows.length) return;
 
     const summary = buildSummary(rows);
@@ -1642,8 +1834,9 @@
     }
     lines.push([]);
     lines.push(["Рейсы"]);
-    lines.push(["ID", "Водитель", "Телефон", "Старт", "Финиш", "Склад", "Статус", "Сумма", "Доставки", "Возвраты"]);
+    lines.push(["ID", "Водитель", "Телефон", "Старт", "Финиш", "Склад", "Статус", "Сумма", "Доставки", "Возвраты", "Конверсия"]);
     for (const row of rows) {
+      const metrics = buildTripMetrics(row, detailsById.get(String(row.id)));
       lines.push([
         row.id,
         row.driverName,
@@ -1653,8 +1846,9 @@
         row.warehouse,
         row.status,
         decimal(row.amount),
-        row.deliveries,
-        row.returns,
+        metrics.deliveries,
+        metrics.returns,
+        percentDecimal(metrics.conversion),
       ]);
     }
 
@@ -1925,8 +2119,21 @@
     }).format(Number(valueText) || 0);
   }
 
+  function formatPercent(valueText) {
+    if (valueText === null || valueText === undefined || Number.isNaN(Number(valueText))) return "—";
+    return `${new Intl.NumberFormat("ru-RU", {
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1,
+    }).format((Number(valueText) || 0) * 100)}%`;
+  }
+
   function decimal(valueText) {
     return String(Math.round((Number(valueText) || 0) * 100) / 100).replace(".", ",");
+  }
+
+  function percentDecimal(valueText) {
+    if (valueText === null || valueText === undefined || Number.isNaN(Number(valueText))) return "";
+    return decimal((Number(valueText) || 0) * 100);
   }
 
   function escapeHtml(valueText) {
