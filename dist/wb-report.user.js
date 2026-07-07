@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WB Logistics Finished Shipments Report
 // @namespace    https://logistics.wildberries.ru/
-// @version      1.0.6
+// @version      1.0.7
 // @description  Отчет по завершенным рейсам WB Logistics с группировкой по водителям и экспортом CSV.
 // @author       Codex
 // @match        https://logistics.wildberries.ru/*
@@ -17,7 +17,7 @@
   "use strict";
 
   const API_URL = "https://drive.wb.ru/client-gateway/courier/api/v1/admin/shipments/finished/list";
-  const SCRIPT_VERSION = "1.0.6";
+  const SCRIPT_VERSION = "1.0.7";
   const PAGE_LIMIT = 200;
   const BUTTON_ID = "wb-report-open-button";
   const ROOT_ID = "wb-report-root";
@@ -814,7 +814,8 @@
 
   function normalizeShipment(item) {
     const id = value(item, [
-      "id", "shipment_id", "shipmentId", "route_id", "routeId", "rid", "last_id",
+      "id", "courier_task_id", "courierTaskId", "shipment_id", "shipmentId",
+      "route_id", "routeId", "rid", "last_id",
     ]);
     const driverName = value(item, [
       "driver.name", "driver.full_name", "driver.fullName", "driverName", "driver_name",
@@ -825,25 +826,30 @@
       "courier.phone", "courierPhone", "phone",
     ]) || "";
     const startedAt = value(item, [
-      "started_at", "startedAt", "created_at", "createdAt", "date_from", "dateFrom",
-      "shipment_date", "shipmentDate", "finished_at", "finishedAt",
+      "started_at", "startedAt", "task_dates.start_date", "taskDates.startDate",
+      "task_dates.loading_start_date", "taskDates.loadingStartDate", "created_at",
+      "createdAt", "date_from", "dateFrom", "shipment_date", "shipmentDate",
+      "finished_at", "finishedAt", "task_dates.finish_date", "taskDates.finishDate",
     ]) || "";
     const finishedAt = value(item, [
-      "finished_at", "finishedAt", "closed_at", "closedAt", "ended_at", "endedAt",
+      "finished_at", "finishedAt", "task_dates.finish_date", "taskDates.finishDate",
+      "closed_at", "closedAt", "ended_at", "endedAt",
     ]) || "";
     const deliveries = numberValue(item, [
-      "deliveries", "delivery_count", "deliveryCount", "delivered", "orders_delivered",
-      "ordersDelivered", "stats.deliveries", "stat.deliveries",
+      "deliveries", "deliveries_count", "deliveriesCount", "delivery_count",
+      "deliveryCount", "delivered", "orders_delivered", "ordersDelivered",
+      "stats.deliveries", "stat.deliveries",
     ]);
     const returns = numberValue(item, [
-      "returns", "return_count", "returnCount", "returned", "orders_returned",
-      "ordersReturned", "stats.returns", "stat.returns",
+      "returns", "returns_count", "returnsCount", "return_count", "returnCount",
+      "returned", "orders_returned", "ordersReturned", "stats.returns", "stat.returns",
     ]);
     const amount = numberValue(item, [
-      "sum", "amount", "total", "total_sum", "totalSum", "price", "cost",
-      "income", "reward", "payment", "driver_reward", "driverReward",
+      "sum", "amount", "total", "total_sum", "totalSum", "price.value",
+      "priceValue", "cost", "income", "reward", "payment", "driver_reward",
+      "driverReward",
     ]);
-    const warehouse = value(item, [
+    const warehouse = firstLoadingPointName(item) || value(item, [
       "warehouse.name", "warehouseName", "warehouse_name", "office.name", "officeName",
       "src_office.name", "srcOfficeName",
     ]) || "";
@@ -853,8 +859,8 @@
       id: id ?? "",
       driverName,
       driverPhone,
-      startedAt,
-      finishedAt,
+      startedAt: normalizeReportDate(startedAt),
+      finishedAt: normalizeReportDate(finishedAt),
       warehouse,
       status,
       deliveries,
@@ -862,6 +868,24 @@
       amount,
       raw: item,
     };
+  }
+
+  function firstLoadingPointName(item) {
+    const loadingPoints = item && Array.isArray(item.loading_points)
+      ? item.loading_points
+      : item && Array.isArray(item.loadingPoints)
+        ? item.loadingPoints
+        : [];
+    const point = loadingPoints[0];
+    if (!point || typeof point !== "object") return "";
+    return value(point, [
+      "address.name", "address.full_address", "address.fullAddress", "name",
+    ]);
+  }
+
+  function normalizeReportDate(valueText) {
+    if (!valueText || /^0001-01-01T00:00:00Z$/i.test(String(valueText))) return "";
+    return valueText;
   }
 
   function buildSummary(rows) {
