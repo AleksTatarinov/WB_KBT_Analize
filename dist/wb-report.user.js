@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WB Logistics Finished Shipments Report
 // @namespace    https://logistics.wildberries.ru/
-// @version      1.0.11
+// @version      1.0.12
 // @description  Отчет по завершенным рейсам WB Logistics с группировкой по водителям и экспортом CSV.
 // @author       Codex
 // @match        https://logistics.wildberries.ru/*
@@ -17,7 +17,7 @@
   "use strict";
 
   const API_URL = "https://drive.wb.ru/client-gateway/courier/api/v1/admin/shipments/finished/list";
-  const SCRIPT_VERSION = "1.0.11";
+  const SCRIPT_VERSION = "1.0.12";
   const PAGE_LIMIT = 200;
   const DETAILS_DEBUG_LIMIT = 100;
   const BUTTON_ID = "wb-report-open-button";
@@ -39,6 +39,7 @@
     summary: null,
     loading: false,
     detailsDebug: [],
+    selectedDrivers: new Set(),
     debug: {
       attempts: [],
       lastError: "",
@@ -196,6 +197,59 @@
       font-size: 16px;
       line-height: 1.2;
     }
+    .wb-report-filter {
+      display: grid;
+      gap: 10px;
+      margin: 0 0 18px;
+      padding: 12px;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      background: #f9fafb;
+    }
+    .wb-report-filter-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .wb-report-filter-title {
+      color: #111827;
+      font-weight: 800;
+    }
+    .wb-report-filter-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .wb-report-filter-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 8px;
+    }
+    .wb-report-filter-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      padding: 8px 10px;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      background: #fff;
+      color: #374151;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .wb-report-filter-option input { margin: 0; }
+    .wb-report-filter-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .wb-report-filter-count {
+      margin-left: auto;
+      color: #6b7280;
+      font-size: 12px;
+    }
     .wb-report-table-wrap {
       overflow: auto;
       border: 1px solid #e5e7eb;
@@ -305,6 +359,7 @@
       .wb-report-driver summary { grid-template-columns: 1fr; }
       .wb-report-driver summary::before { display: none; }
       .wb-report-driver-metric { text-align: left; }
+      .wb-report-filter-head { align-items: flex-start; flex-direction: column; }
       .wb-report-header,
       .wb-report-controls { padding: 12px; }
       .wb-report-content { padding: 12px; }
@@ -365,6 +420,18 @@
     root.addEventListener("click", (event) => {
       const target = event.target;
       if (target && target.dataset && target.dataset.action === "close") closeModal();
+      if (target && target.dataset && target.dataset.action === "select-all-drivers") {
+        setAllDriversSelected(true);
+      }
+      if (target && target.dataset && target.dataset.action === "clear-drivers") {
+        setAllDriversSelected(false);
+      }
+    });
+    root.addEventListener("change", (event) => {
+      const target = event.target;
+      if (target && target.dataset && target.dataset.driverKey) {
+        toggleDriverFilter(target.dataset.driverKey, target.checked);
+      }
     });
     root.querySelector("#wb-report-load").addEventListener("click", loadReport);
     root.querySelector("#wb-report-export").addEventListener("click", exportCsv);
@@ -407,8 +474,9 @@
     try {
       const rows = await fetchAllPages(dateFrom, dateTo);
       state.rows = rows.map(normalizeShipment);
-      state.grouped = groupByDriver(state.rows);
-      state.summary = buildSummary(state.rows);
+      state.selectedDrivers = new Set(state.rows.map(driverKey));
+      state.grouped = groupByDriver(getFilteredRows());
+      state.summary = buildSummary(getFilteredRows());
       state.detailsDebug = [];
       renderReport();
       setStatus(`Готово: ${formatNumber(state.rows.length)} рейсов.`);
@@ -478,7 +546,7 @@
       return;
     }
 
-    const rows = state.rows.filter((row) => row.id).slice(0, DETAILS_DEBUG_LIMIT);
+    const rows = getFilteredRows().filter((row) => row.id).slice(0, DETAILS_DEBUG_LIMIT);
     if (!rows.length) {
       setStatus("В рейсах нет ID заданий для загрузки деталей.");
       return;
@@ -1175,6 +1243,51 @@
     return Array.from(map.values()).sort((a, b) => b.amount - a.amount || b.trips - a.trips);
   }
 
+  function driverKey(row) {
+    return [row.driverName || "", row.driverPhone || ""].join("|");
+  }
+
+  function getFilteredRows() {
+    if (!state.selectedDrivers.size) return [];
+    return state.rows.filter((row) => state.selectedDrivers.has(driverKey(row)));
+  }
+
+  function getFilteredDetails() {
+    const filteredIds = new Set(getFilteredRows().map((row) => String(row.id)));
+    return state.detailsDebug.filter((detail) => filteredIds.has(String(detail.id)));
+  }
+
+  function getDriverFilterOptions() {
+    return groupByDriver(state.rows).map((row) => ({
+      key: driverKey(row),
+      name: row.driverName,
+      phone: row.driverPhone,
+      trips: row.trips,
+      selected: state.selectedDrivers.has(driverKey(row)),
+    }));
+  }
+
+  function refreshDerivedReportState() {
+    const rows = getFilteredRows();
+    state.grouped = groupByDriver(rows);
+    state.summary = buildSummary(rows);
+  }
+
+  function toggleDriverFilter(key, selected) {
+    if (selected) state.selectedDrivers.add(key);
+    else state.selectedDrivers.delete(key);
+    refreshDerivedReportState();
+    renderReport();
+  }
+
+  function setAllDriversSelected(selected) {
+    state.selectedDrivers = selected
+      ? new Set(state.rows.map(driverKey))
+      : new Set();
+    refreshDerivedReportState();
+    renderReport();
+  }
+
   function buildDetailsSummary(details) {
     return details.reduce((result, detail) => {
       const summary = detail.summary || {};
@@ -1252,6 +1365,9 @@
 
   function renderReport() {
     const content = document.getElementById("wb-report-content");
+    refreshDerivedReportState();
+    const filteredRows = getFilteredRows();
+    const filteredDetails = getFilteredDetails();
     const summary = state.summary || buildSummary([]);
 
     if (!state.rows.length) {
@@ -1269,14 +1385,17 @@
         ${renderStat("Возвраты", formatNumber(summary.returns))}
         ${renderStat("Средний рейс", formatMoney(summary.averageTrip))}
       </div>
+      ${renderDriverFilter()}
+      ${!filteredRows.length ? `<div class="wb-report-empty">Выберите хотя бы одного водителя.</div>` : `
       <h3 class="wb-report-section-title">По водителям</h3>
       ${renderDriversTable(state.grouped)}
-      ${state.detailsDebug.length ? renderDetailsSummary() : ""}
+      ${filteredDetails.length ? renderDetailsSummary(filteredDetails) : ""}
       <h3 class="wb-report-section-title">Рейсы</h3>
-      ${renderTripsTable(state.rows)}
+      ${renderTripsTable(filteredRows)}
+      `}
     `;
-    setExportEnabled(true);
-    setDetailsDebugEnabled(true);
+    setExportEnabled(filteredRows.length > 0);
+    setDetailsDebugEnabled(filteredRows.length > 0);
   }
 
   function renderStat(label, valueText) {
@@ -1285,6 +1404,32 @@
         <div class="wb-report-stat-label">${escapeHtml(label)}</div>
         <div class="wb-report-stat-value">${escapeHtml(valueText)}</div>
       </div>
+    `;
+  }
+
+  function renderDriverFilter() {
+    const options = getDriverFilterOptions();
+    const selectedCount = options.filter((option) => option.selected).length;
+
+    return `
+      <section class="wb-report-filter">
+        <div class="wb-report-filter-head">
+          <div class="wb-report-filter-title">Водители: ${formatNumber(selectedCount)} из ${formatNumber(options.length)}</div>
+          <div class="wb-report-filter-actions">
+            <button class="wb-report-btn" type="button" data-action="select-all-drivers">Все</button>
+            <button class="wb-report-btn" type="button" data-action="clear-drivers">Сбросить</button>
+          </div>
+        </div>
+        <div class="wb-report-filter-grid">
+          ${options.map((option) => `
+            <label class="wb-report-filter-option" title="${escapeHtml(option.name)}">
+              <input type="checkbox" data-driver-key="${escapeHtml(option.key)}"${option.selected ? " checked" : ""}>
+              <span class="wb-report-filter-name">${escapeHtml(option.name)}</span>
+              <span class="wb-report-filter-count">${formatNumber(option.trips)}</span>
+            </label>
+          `).join("")}
+        </div>
+      </section>
     `;
   }
 
@@ -1367,8 +1512,8 @@
     `;
   }
 
-  function renderDetailsSummary() {
-    const summary = buildDetailsSummary(state.detailsDebug);
+  function renderDetailsSummary(details) {
+    const summary = buildDetailsSummary(details);
 
     return `
       <div class="wb-report-summary">
@@ -1377,46 +1522,6 @@
         ${renderStat("Пакеты", formatNumber(summary.packages))}
         ${renderStat("Продано", formatNumber(summary.soldPackages))}
         ${renderStat("Возвраты", formatNumber(summary.returnPackages))}
-      </div>
-    `;
-  }
-
-  function renderDetailsTable(details) {
-    return `
-      <div class="wb-report-table-wrap">
-        <table class="wb-report-table">
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Водитель</th>
-              <th>Загрузка</th>
-              <th class="wb-report-num">Выгрузки</th>
-              <th class="wb-report-num">Пакеты</th>
-              <th class="wb-report-num">Продано</th>
-              <th class="wb-report-num">Доставки</th>
-              <th class="wb-report-num">Возвраты</th>
-              <th>Статусы продаж</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${details.map((detail) => {
-              const summary = detail.summary || {};
-              return `
-                <tr>
-                  <td>${escapeHtml(detail.id)}</td>
-                  <td>${escapeHtml(detail.driverName)}</td>
-                  <td>${escapeHtml(joinCsvList(summary.loadingAddresses))}</td>
-                  <td class="wb-report-num">${formatNumber(summary.unloadingPointsCount)}</td>
-                  <td class="wb-report-num">${formatNumber(summary.packagesCount)}</td>
-                  <td class="wb-report-num">${formatNumber(summary.soldPackagesCount)}</td>
-                  <td class="wb-report-num">${formatNumber(summary.deliveryPackagesCount)}</td>
-                  <td class="wb-report-num">${formatNumber(summary.returnPackagesCount)}</td>
-                  <td>${escapeHtml(formatCountMap(summary.sellResults))}</td>
-                </tr>
-              `;
-            }).join("")}
-          </tbody>
-        </table>
       </div>
     `;
   }
@@ -1467,9 +1572,12 @@
   }
 
   function exportCsv() {
-    if (!state.rows.length) return;
+    const rows = getFilteredRows();
+    const grouped = groupByDriver(rows);
+    const details = getFilteredDetails();
+    if (!rows.length) return;
 
-    const summary = state.summary || buildSummary(state.rows);
+    const summary = buildSummary(rows);
     const lines = [];
 
     lines.push(["Сводка"]);
@@ -1484,7 +1592,7 @@
     lines.push([]);
     lines.push(["По водителям"]);
     lines.push(["Водитель", "Телефон", "Рейсы", "Сумма", "Доставки", "Возвраты", "Средний рейс"]);
-    for (const row of state.grouped) {
+    for (const row of grouped) {
       lines.push([
         row.driverName,
         row.driverPhone,
@@ -1498,7 +1606,7 @@
     lines.push([]);
     lines.push(["Рейсы"]);
     lines.push(["ID", "Водитель", "Телефон", "Старт", "Финиш", "Склад", "Статус", "Сумма", "Доставки", "Возвраты"]);
-    for (const row of state.rows) {
+    for (const row of rows) {
       lines.push([
         row.id,
         row.driverName,
@@ -1513,7 +1621,7 @@
       ]);
     }
 
-    appendDetailsCsv(lines);
+    appendDetailsCsv(lines, details);
 
     const csv = "\uFEFF" + lines.map(toCsvLine).join("\r\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
@@ -1530,8 +1638,8 @@
     URL.revokeObjectURL(url);
   }
 
-  function appendDetailsCsv(lines) {
-    if (!state.detailsDebug.length) return;
+  function appendDetailsCsv(lines, details) {
+    if (!details.length) return;
 
     lines.push([]);
     lines.push(["Детали заданий"]);
@@ -1539,7 +1647,7 @@
       "ID", "Водитель", "Телефон", "Точек загрузки", "Точек выгрузки",
       "Пакетов", "Продано", "Доставки", "Возвраты", "Адреса загрузки", "Адреса выгрузки",
     ]);
-    for (const detail of state.detailsDebug) {
+    for (const detail of details) {
       const summary = detail.summary || {};
       lines.push([
         detail.id,
@@ -1563,7 +1671,7 @@
       "cargo_id", "way_type", "sell_result", "action_status", "delivery_type",
       "loading_date", "unloading_date", "Адрес загрузки", "Адрес выгрузки", "photo",
     ]);
-    for (const detail of state.detailsDebug) {
+    for (const detail of details) {
       const packages = detail.response ? flattenLoadingPointsPackages(detail.response) : [];
       for (const item of packages) {
         lines.push([
@@ -1600,6 +1708,10 @@
       lastError: state.debug.lastError,
       attempts: state.debug.attempts,
       rowCount: state.rows.length,
+      filteredRowCount: getFilteredRows().length,
+      selectedDrivers: getDriverFilterOptions()
+        .filter((option) => option.selected)
+        .map((option) => ({ name: option.name, phone: option.phone, trips: option.trips })),
       normalizedRowsSample: state.rows.slice(0, 3).map(({ raw, ...row }) => row),
       rawRowsSample: state.rows.slice(0, 3).map((row) => row.raw),
       detailsDebugLimit: DETAILS_DEBUG_LIMIT,
@@ -1648,14 +1760,14 @@
       loadButton.disabled = isLoading;
       loadButton.textContent = isLoading ? "Загрузка..." : "Сформировать";
     }
-    setExportEnabled(!isLoading && state.rows.length > 0);
-    setDetailsDebugEnabled(!isLoading && state.rows.length > 0);
+    setExportEnabled(!isLoading && getFilteredRows().length > 0);
+    setDetailsDebugEnabled(!isLoading && getFilteredRows().length > 0);
   }
 
   function setDetailsDebugLoading(isLoading) {
     const button = document.getElementById("wb-report-details-debug");
     if (!button) return;
-    button.disabled = isLoading || !state.rows.length;
+    button.disabled = isLoading || !getFilteredRows().length;
     button.textContent = isLoading ? "Детали..." : "Собрать детали";
   }
 
