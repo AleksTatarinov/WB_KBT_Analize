@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WB Logistics Finished Shipments Report
 // @namespace    https://logistics.wildberries.ru/
-// @version      1.0.4
+// @version      1.0.5
 // @description  Отчет по завершенным рейсам WB Logistics с группировкой по водителям и экспортом CSV.
 // @author       Codex
 // @match        https://logistics.wildberries.ru/*
@@ -17,8 +17,8 @@
   "use strict";
 
   const API_URL = "https://drive.wb.ru/client-gateway/courier/api/v1/admin/shipments/finished/list";
-  const SCRIPT_VERSION = "1.0.4";
-  const PAGE_LIMIT = 100;
+  const SCRIPT_VERSION = "1.0.5";
+  const PAGE_LIMIT = 200;
   const BUTTON_ID = "wb-report-open-button";
   const ROOT_ID = "wb-report-root";
 
@@ -400,6 +400,29 @@
     }
 
     builders.push(
+      {
+        name: "data-meta-searching-date",
+        build: ({ dateFrom, dateTo, lastId }) => ({
+          data: {
+            car_plate: null,
+            courier: null,
+            courier_phone: null,
+            courier_task_id: null,
+            delivery_types: [],
+            loading_point_id: null,
+            package_way_types: [],
+            searching_date: {
+              from: toApiDateStart(dateFrom),
+              to: toApiDateStart(dateTo),
+            },
+            supplier: null,
+          },
+          meta: {
+            last_id: lastId ?? null,
+            limit: String(PAGE_LIMIT),
+          },
+        }),
+      },
       {
         name: "filter-camel",
         build: ({ dateFrom, dateTo, lastId }) => withPagination({
