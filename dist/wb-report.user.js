@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WB Logistics Finished Shipments Report
 // @namespace    https://logistics.wildberries.ru/
-// @version      1.0.9
+// @version      1.0.10
 // @description  Отчет по завершенным рейсам WB Logistics с группировкой по водителям и экспортом CSV.
 // @author       Codex
 // @match        https://logistics.wildberries.ru/*
@@ -17,7 +17,7 @@
   "use strict";
 
   const API_URL = "https://drive.wb.ru/client-gateway/courier/api/v1/admin/shipments/finished/list";
-  const SCRIPT_VERSION = "1.0.9";
+  const SCRIPT_VERSION = "1.0.10";
   const PAGE_LIMIT = 200;
   const DETAILS_DEBUG_LIMIT = 100;
   const BUTTON_ID = "wb-report-open-button";
@@ -415,6 +415,7 @@
         setStatus(`Загружаю детали ${index + 1}/${rows.length}...`);
         state.detailsDebug.push(await fetchShipmentLoadingPointsDebug(row));
       }
+      renderReport();
       setStatus(`Детали собраны: ${state.detailsDebug.length}. Нажмите "Скопировать отладку".`);
     } catch (error) {
       console.error("[WB Report]", error);
@@ -1094,6 +1095,28 @@
     return Array.from(map.values()).sort((a, b) => b.amount - a.amount || b.trips - a.trips);
   }
 
+  function buildDetailsSummary(details) {
+    return details.reduce((result, detail) => {
+      const summary = detail.summary || {};
+      result.tasks += 1;
+      result.loadingPoints += Number(summary.loadingPointsCount) || 0;
+      result.unloadingPoints += Number(summary.unloadingPointsCount) || 0;
+      result.packages += Number(summary.packagesCount) || 0;
+      result.soldPackages += Number(summary.soldPackagesCount) || 0;
+      result.deliveryPackages += Number(summary.deliveryPackagesCount) || 0;
+      result.returnPackages += Number(summary.returnPackagesCount) || 0;
+      return result;
+    }, {
+      tasks: 0,
+      loadingPoints: 0,
+      unloadingPoints: 0,
+      packages: 0,
+      soldPackages: 0,
+      deliveryPackages: 0,
+      returnPackages: 0,
+    });
+  }
+
   function renderReport() {
     const content = document.getElementById("wb-report-content");
     const summary = state.summary || buildSummary([]);
@@ -1115,6 +1138,11 @@
       </div>
       <h3 class="wb-report-section-title">По водителям</h3>
       ${renderDriversTable(state.grouped)}
+      ${state.detailsDebug.length ? `
+        <h3 class="wb-report-section-title">Детали заданий</h3>
+        ${renderDetailsSummary()}
+        ${renderDetailsTable(state.detailsDebug)}
+      ` : ""}
       <h3 class="wb-report-section-title">Рейсы</h3>
       ${renderTripsTable(state.rows)}
     `;
@@ -1158,6 +1186,60 @@
                 <td class="wb-report-num">${formatMoney(row.averageTrip)}</td>
               </tr>
             `).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function renderDetailsSummary() {
+    const summary = buildDetailsSummary(state.detailsDebug);
+
+    return `
+      <div class="wb-report-summary">
+        ${renderStat("Задания", formatNumber(summary.tasks))}
+        ${renderStat("Выгрузки", formatNumber(summary.unloadingPoints))}
+        ${renderStat("Пакеты", formatNumber(summary.packages))}
+        ${renderStat("Продано", formatNumber(summary.soldPackages))}
+        ${renderStat("Возвраты", formatNumber(summary.returnPackages))}
+      </div>
+    `;
+  }
+
+  function renderDetailsTable(details) {
+    return `
+      <div class="wb-report-table-wrap">
+        <table class="wb-report-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Водитель</th>
+              <th>Загрузка</th>
+              <th class="wb-report-num">Выгрузки</th>
+              <th class="wb-report-num">Пакеты</th>
+              <th class="wb-report-num">Продано</th>
+              <th class="wb-report-num">Доставки</th>
+              <th class="wb-report-num">Возвраты</th>
+              <th>Статусы продаж</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${details.map((detail) => {
+              const summary = detail.summary || {};
+              return `
+                <tr>
+                  <td>${escapeHtml(detail.id)}</td>
+                  <td>${escapeHtml(detail.driverName)}</td>
+                  <td>${escapeHtml(joinCsvList(summary.loadingAddresses))}</td>
+                  <td class="wb-report-num">${formatNumber(summary.unloadingPointsCount)}</td>
+                  <td class="wb-report-num">${formatNumber(summary.packagesCount)}</td>
+                  <td class="wb-report-num">${formatNumber(summary.soldPackagesCount)}</td>
+                  <td class="wb-report-num">${formatNumber(summary.deliveryPackagesCount)}</td>
+                  <td class="wb-report-num">${formatNumber(summary.returnPackagesCount)}</td>
+                  <td>${escapeHtml(formatCountMap(summary.sellResults))}</td>
+                </tr>
+              `;
+            }).join("")}
           </tbody>
         </table>
       </div>
@@ -1369,6 +1451,14 @@
 
   function joinCsvList(values) {
     return Array.isArray(values) ? values.join(" | ") : "";
+  }
+
+  function formatCountMap(valueText) {
+    if (!valueText || typeof valueText !== "object") return "";
+    return Object.keys(valueText)
+      .sort()
+      .map((key) => `${key}: ${valueText[key]}`)
+      .join(" | ");
   }
 
   function setStatus(message) {
