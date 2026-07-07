@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WB Logistics Finished Shipments Report
 // @namespace    https://logistics.wildberries.ru/
-// @version      1.0.8
+// @version      1.0.9
 // @description  Отчет по завершенным рейсам WB Logistics с группировкой по водителям и экспортом CSV.
 // @author       Codex
 // @match        https://logistics.wildberries.ru/*
@@ -17,9 +17,9 @@
   "use strict";
 
   const API_URL = "https://drive.wb.ru/client-gateway/courier/api/v1/admin/shipments/finished/list";
-  const SCRIPT_VERSION = "1.0.8";
+  const SCRIPT_VERSION = "1.0.9";
   const PAGE_LIMIT = 200;
-  const DETAILS_DEBUG_LIMIT = 10;
+  const DETAILS_DEBUG_LIMIT = 100;
   const BUTTON_ID = "wb-report-open-button";
   const ROOT_ID = "wb-report-root";
 
@@ -445,6 +445,8 @@
           method: "POST",
           payloadName: payload.name,
           payload: payload.value ?? null,
+          summary: summarizeLoadingPointsDetails(response),
+          packagesSample: flattenLoadingPointsPackages(response).slice(0, 20),
           response,
         };
       } catch (error) {
@@ -465,6 +467,96 @@
 
   function shipmentDetailsBaseUrl(id) {
     return `https://drive.wb.ru/client-gateway/courier/api/v1/admin/shipments/${encodeURIComponent(id)}`;
+  }
+
+  function summarizeLoadingPointsDetails(response) {
+    const loadingPoints = readLoadingPointsDetails(response);
+    const packages = flattenLoadingPointsPackages(response);
+    const unloadingPoints = flattenUnloadingPoints(response);
+    const loadingAddresses = uniqueTexts(loadingPoints.map((point) => addressText(point.route_point)));
+    const unloadingAddresses = uniqueTexts(unloadingPoints.map((point) => addressText(point.route_point)));
+    const packageWayTypes = countBy(packages, "courier_package_way_type");
+    const sellResults = countBy(packages, "sell_result");
+    const actionStatuses = countBy(packages, "action_status");
+    const deliveryTypes = countBy(packages, "delivery_type");
+    const returnResults = countBy(packages, "return_result");
+
+    return {
+      loadingPointsCount: loadingPoints.length,
+      unloadingPointsCount: unloadingPoints.length,
+      packagesCount: packages.length,
+      soldPackagesCount: packages.filter((item) => item.sell_result === "SELL_RESULT_SOLD").length,
+      deliveryPackagesCount: packages.filter((item) => item.courier_package_way_type === "COURIER_PACKAGE_WAY_TYPE_DELIVERY").length,
+      returnPackagesCount: packages.filter((item) => item.courier_package_way_type === "COURIER_PACKAGE_WAY_TYPE_RETURN").length,
+      loadingAddresses,
+      unloadingAddresses,
+      packageWayTypes,
+      sellResults,
+      actionStatuses,
+      deliveryTypes,
+      returnResults,
+      cargoIds: uniqueTexts(packages.map((item) => item.cargo_id)).slice(0, 50),
+      shks: uniqueTexts(packages.map((item) => item.shk)).slice(0, 50),
+      rids: uniqueTexts(packages.map((item) => item.rid)).slice(0, 50),
+    };
+  }
+
+  function readLoadingPointsDetails(response) {
+    const points = readArray(response, [
+      "data.loading_points_list", "data.loadingPointsList", "loading_points_list",
+      "loadingPointsList", "result.data.loading_points_list",
+    ]);
+    return points.filter((point) => point && typeof point === "object");
+  }
+
+  function flattenUnloadingPoints(response) {
+    return readLoadingPointsDetails(response).flatMap((loadingPoint) => {
+      const points = loadingPoint.unloading_points_list || loadingPoint.unloadingPointsList || [];
+      return Array.isArray(points) ? points.filter((point) => point && typeof point === "object") : [];
+    });
+  }
+
+  function flattenLoadingPointsPackages(response) {
+    return readLoadingPointsDetails(response).flatMap((loadingPoint) => {
+      const loadingAddress = addressText(loadingPoint.route_point);
+      const unloadingPoints = loadingPoint.unloading_points_list || loadingPoint.unloadingPointsList || [];
+      if (!Array.isArray(unloadingPoints)) return [];
+
+      return unloadingPoints.flatMap((unloadingPoint) => {
+        const unloadingAddress = addressText(unloadingPoint.route_point);
+        const unloadingRoutePointId = value(unloadingPoint.route_point || {}, ["route_point_id", "routePointId"]);
+        const packages = unloadingPoint.courier_packages || unloadingPoint.courierPackages || [];
+        if (!Array.isArray(packages)) return [];
+
+        return packages
+          .filter((item) => item && typeof item === "object")
+          .map((item) => ({
+            ...item,
+            loading_address: loadingAddress,
+            unloading_address: unloadingAddress,
+            unloading_route_point_id: unloadingRoutePointId,
+          }));
+      });
+    });
+  }
+
+  function addressText(routePoint) {
+    return value(routePoint || {}, [
+      "address.name", "address.full_address", "address.fullAddress", "address.point_id",
+    ]);
+  }
+
+  function countBy(rows, field) {
+    return rows.reduce((result, row) => {
+      const key = row && row[field] ? String(row[field]) : "";
+      if (!key) return result;
+      result[key] = (result[key] || 0) + 1;
+      return result;
+    }, {});
+  }
+
+  function uniqueTexts(values) {
+    return Array.from(new Set(values.map((item) => String(item || "").trim()).filter(Boolean)));
   }
 
   function buildPayloadBuilders() {
@@ -1164,6 +1256,8 @@
       ]);
     }
 
+    appendDetailsCsv(lines);
+
     const csv = "\uFEFF" + lines.map(toCsvLine).join("\r\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -1177,6 +1271,66 @@
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
+  }
+
+  function appendDetailsCsv(lines) {
+    if (!state.detailsDebug.length) return;
+
+    lines.push([]);
+    lines.push(["Детали заданий"]);
+    lines.push([
+      "ID", "Водитель", "Телефон", "Точек загрузки", "Точек выгрузки",
+      "Пакетов", "Продано", "Доставки", "Возвраты", "Адреса загрузки", "Адреса выгрузки",
+    ]);
+    for (const detail of state.detailsDebug) {
+      const summary = detail.summary || {};
+      lines.push([
+        detail.id,
+        detail.driverName,
+        detail.driverPhone,
+        summary.loadingPointsCount,
+        summary.unloadingPointsCount,
+        summary.packagesCount,
+        summary.soldPackagesCount,
+        summary.deliveryPackagesCount,
+        summary.returnPackagesCount,
+        joinCsvList(summary.loadingAddresses),
+        joinCsvList(summary.unloadingAddresses),
+      ]);
+    }
+
+    lines.push([]);
+    lines.push(["Пакеты заданий"]);
+    lines.push([
+      "ID", "Водитель", "Телефон", "package_id", "sticker", "rid", "shk", "external_id",
+      "cargo_id", "way_type", "sell_result", "action_status", "delivery_type",
+      "loading_date", "unloading_date", "Адрес загрузки", "Адрес выгрузки", "photo",
+    ]);
+    for (const detail of state.detailsDebug) {
+      const packages = detail.response ? flattenLoadingPointsPackages(detail.response) : [];
+      for (const item of packages) {
+        lines.push([
+          detail.id,
+          detail.driverName,
+          detail.driverPhone,
+          item.package_id,
+          item.sticker,
+          item.rid,
+          item.shk,
+          item.external_id,
+          item.cargo_id,
+          item.courier_package_way_type,
+          item.sell_result,
+          item.action_status,
+          item.delivery_type,
+          formatDateTime(item.loading_date),
+          formatDateTime(item.unloading_date),
+          item.loading_address,
+          item.unloading_address,
+          item.big_photo_url,
+        ]);
+      }
+    }
   }
 
   async function copyDebugInfo() {
@@ -1211,6 +1365,10 @@
       const text = value === null || value === undefined ? "" : String(value);
       return `"${text.replace(/"/g, '""')}"`;
     }).join(";");
+  }
+
+  function joinCsvList(values) {
+    return Array.isArray(values) ? values.join(" | ") : "";
   }
 
   function setStatus(message) {
