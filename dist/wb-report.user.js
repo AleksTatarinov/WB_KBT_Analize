@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WB Logistics Finished Shipments Report
 // @namespace    https://logistics.wildberries.ru/
-// @version      1.0.13
+// @version      1.0.14
 // @description  Отчет по завершенным рейсам WB Logistics с группировкой по водителям и экспортом CSV.
 // @author       Codex
 // @match        https://logistics.wildberries.ru/*
@@ -17,7 +17,7 @@
   "use strict";
 
   const API_URL = "https://drive.wb.ru/client-gateway/courier/api/v1/admin/shipments/finished/list";
-  const SCRIPT_VERSION = "1.0.13";
+  const SCRIPT_VERSION = "1.0.14";
   const PAGE_LIMIT = 200;
   const DETAILS_DEBUG_LIMIT = 100;
   const BUTTON_ID = "wb-report-open-button";
@@ -40,6 +40,7 @@
     loading: false,
     detailsDebug: [],
     selectedDrivers: new Set(),
+    driverFilterOpen: false,
     debug: {
       attempts: [],
       lastError: "",
@@ -198,33 +199,57 @@
       line-height: 1.2;
     }
     .wb-report-filter {
-      display: grid;
-      gap: 10px;
+      position: relative;
+      width: min(420px, 100%);
       margin: 0 0 18px;
-      padding: 12px;
-      border: 1px solid #e5e7eb;
-      border-radius: 8px;
-      background: #f9fafb;
     }
-    .wb-report-filter-head {
+    .wb-report-filter > summary {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-    }
-    .wb-report-filter-title {
+      min-height: 42px;
+      padding: 9px 12px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      background: #fff;
       color: #111827;
       font-weight: 800;
+      cursor: pointer;
+      list-style: none;
     }
+    .wb-report-filter > summary::-webkit-details-marker { display: none; }
+    .wb-report-filter > summary::marker { content: ""; }
+    .wb-report-filter > summary::after {
+      content: "▾";
+      color: #6b7280;
+      font-size: 12px;
+    }
+    .wb-report-filter[open] > summary::after { content: "▴"; }
     .wb-report-filter-actions {
       display: flex;
       gap: 8px;
       flex-wrap: wrap;
+      padding: 10px 10px 8px;
+      border-bottom: 1px solid #e5e7eb;
     }
     .wb-report-filter-grid {
+      max-height: 320px;
+      overflow: auto;
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 8px;
+      gap: 4px;
+      padding: 8px;
+    }
+    .wb-report-filter-menu {
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      right: 0;
+      z-index: 20;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      background: #fff;
+      box-shadow: 0 18px 40px rgba(15, 23, 42, .18);
     }
     .wb-report-filter-option {
       display: flex;
@@ -232,13 +257,13 @@
       gap: 8px;
       min-width: 0;
       padding: 8px 10px;
-      border: 1px solid #e5e7eb;
       border-radius: 6px;
       background: #fff;
       color: #374151;
       font-size: 13px;
       font-weight: 700;
     }
+    .wb-report-filter-option:hover { background: #f9fafb; }
     .wb-report-filter-option input { margin: 0; }
     .wb-report-filter-name {
       overflow: hidden;
@@ -359,7 +384,7 @@
       .wb-report-driver summary { grid-template-columns: 1fr; }
       .wb-report-driver summary::before { display: none; }
       .wb-report-driver-metric { text-align: left; }
-      .wb-report-filter-head { align-items: flex-start; flex-direction: column; }
+      .wb-report-filter { width: 100%; }
       .wb-report-header,
       .wb-report-controls { padding: 12px; }
       .wb-report-content { padding: 12px; }
@@ -421,15 +446,18 @@
       const target = event.target;
       if (target && target.dataset && target.dataset.action === "close") closeModal();
       if (target && target.dataset && target.dataset.action === "select-all-drivers") {
+        state.driverFilterOpen = Boolean(target.closest(".wb-report-filter"));
         setAllDriversSelected(true);
       }
       if (target && target.dataset && target.dataset.action === "clear-drivers") {
+        state.driverFilterOpen = Boolean(target.closest(".wb-report-filter"));
         setAllDriversSelected(false);
       }
     });
     root.addEventListener("change", (event) => {
       const target = event.target;
       if (target && target.dataset && target.dataset.driverKey) {
+        state.driverFilterOpen = Boolean(target.closest(".wb-report-filter"));
         toggleDriverFilter(target.dataset.driverKey, target.checked);
       }
     });
@@ -475,6 +503,7 @@
       const rows = await fetchAllPages(dateFrom, dateTo);
       state.rows = rows.map(normalizeShipment);
       state.selectedDrivers = new Set(state.rows.map(driverKey));
+      state.driverFilterOpen = false;
       state.grouped = groupByDriver(getFilteredRows());
       state.summary = buildSummary(getFilteredRows());
       state.detailsDebug = [];
@@ -1420,24 +1449,24 @@
     const selectedCount = options.filter((option) => option.selected).length;
 
     return `
-      <section class="wb-report-filter">
-        <div class="wb-report-filter-head">
-          <div class="wb-report-filter-title">Водители: ${formatNumber(selectedCount)} из ${formatNumber(options.length)}</div>
+      <details class="wb-report-filter"${state.driverFilterOpen ? " open" : ""}>
+        <summary>Водители: ${formatNumber(selectedCount)} из ${formatNumber(options.length)}</summary>
+        <div class="wb-report-filter-menu">
           <div class="wb-report-filter-actions">
             <button class="wb-report-btn" type="button" data-action="select-all-drivers">Все</button>
             <button class="wb-report-btn" type="button" data-action="clear-drivers">Сбросить</button>
           </div>
+          <div class="wb-report-filter-grid">
+            ${options.map((option) => `
+              <label class="wb-report-filter-option" title="${escapeHtml(option.name)}">
+                <input type="checkbox" data-driver-key="${escapeHtml(option.key)}"${option.selected ? " checked" : ""}>
+                <span class="wb-report-filter-name">${escapeHtml(option.name)}</span>
+                <span class="wb-report-filter-count">${formatNumber(option.trips)}</span>
+              </label>
+            `).join("")}
+          </div>
         </div>
-        <div class="wb-report-filter-grid">
-          ${options.map((option) => `
-            <label class="wb-report-filter-option" title="${escapeHtml(option.name)}">
-              <input type="checkbox" data-driver-key="${escapeHtml(option.key)}"${option.selected ? " checked" : ""}>
-              <span class="wb-report-filter-name">${escapeHtml(option.name)}</span>
-              <span class="wb-report-filter-count">${formatNumber(option.trips)}</span>
-            </label>
-          `).join("")}
-        </div>
-      </section>
+      </details>
     `;
   }
 
