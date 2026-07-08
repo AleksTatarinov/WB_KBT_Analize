@@ -363,7 +363,7 @@
     }
     .wb-report-driver summary {
       display: grid;
-      grid-template-columns: 18px minmax(220px, 1.6fr) repeat(5, minmax(88px, 1fr));
+      grid-template-columns: 18px minmax(220px, 1.6fr) repeat(6, minmax(88px, 1fr));
       gap: 12px;
       align-items: center;
       padding: 12px 14px;
@@ -1405,10 +1405,12 @@
     return rows.reduce((result, row) => {
       const detail = detailsById.get(String(row.id));
       const summary = detail && detail.summary ? detail.summary : {};
+      result.packages += detail ? Number(summary.packagesCount) || 0 : 0;
       result.deliveryPackages += detail ? Number(summary.deliveryPackagesCount) || 0 : row.deliveries || 0;
       result.returnPackages += detail ? Number(summary.returnPackagesCount) || 0 : row.returns || 0;
       return result;
     }, {
+      packages: 0,
       deliveryPackages: 0,
       returnPackages: 0,
     });
@@ -1666,6 +1668,9 @@
 
   function renderDriverSection(row, detailsById, isOpen) {
     const detailSummary = buildDriverDetailSummary(row.tripRows || [], detailsById);
+    const driverConversion = detailSummary.packages
+      ? detailSummary.deliveryPackages / detailSummary.packages
+      : null;
 
     return `
       <details class="wb-report-driver"${isOpen ? " open" : ""}>
@@ -1677,6 +1682,7 @@
           <div class="wb-report-driver-metric"><span>Рейсы</span>${formatNumber(row.trips)}</div>
           <div class="wb-report-driver-metric"><span>Сумма</span>${formatMoney(row.amount)}</div>
           <div class="wb-report-driver-metric"><span>Доставки</span>${formatNumber(detailSummary.deliveryPackages || row.deliveries)}</div>
+          <div class="wb-report-driver-metric"><span>Конверсия</span>${formatPercent(driverConversion)}</div>
           <div class="wb-report-driver-metric"><span>Возвраты</span>${formatNumber(detailSummary.returnPackages || row.returns)}</div>
           <div class="wb-report-driver-metric"><span>Средний рейс</span>${formatMoney(row.averageTrip)}</div>
         </summary>
