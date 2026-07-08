@@ -1,7 +1,11 @@
 // ==UserScript==
 // @name         WB Logistics Finished Shipments Report
 // @namespace    https://logistics.wildberries.ru/
+<<<<<<< HEAD
 // @version      1.0.15
+=======
+// @version      1.1.0
+>>>>>>> b3e4a7e (Add withdrawals request report)
 // @description  Отчет по завершенным рейсам WB Logistics с группировкой по водителям и экспортом CSV.
 // @author       Codex
 // @match        https://logistics.wildberries.ru/*
@@ -17,11 +21,15 @@
   "use strict";
 
   const API_URL = "https://drive.wb.ru/client-gateway/courier/api/v1/admin/shipments/finished/list";
-  const SCRIPT_VERSION = "1.0.15";
+  const SCRIPT_VERSION = "1.1.0";
   const PAGE_LIMIT = 200;
   const DETAILS_DEBUG_LIMIT = 100;
   const BUTTON_ID = "wb-report-open-button";
+  const WITHDRAWALS_BUTTON_ID = "wb-withdrawals-open-button";
   const ROOT_ID = "wb-report-root";
+  const WITHDRAWALS_ROOT_ID = "wb-withdrawals-root";
+  const WITHDRAWALS_API_URL = "https://drive.wb.ru/client-gateway/api/finance/credeber/v2/withdrawals";
+  const DEFAULT_SUPPLIER_ID = "4125748";
   const STATUS_LABELS = {
     ROUTE_POINT_ACTION_STATUS_DONE: "Выполнено",
     ROUTE_POINT_ACTION_STATUS_CANCELED: "Отменено",
@@ -46,6 +54,11 @@
       lastError: "",
     },
   };
+  let withdrawalsState = {
+    rows: [],
+    loading: false,
+    supplierId: DEFAULT_SUPPLIER_ID,
+  };
   let capturedAuthHeaders = {};
   let capturedBodyTemplate = null;
   let workingPayloadBuilder = null;
@@ -66,6 +79,21 @@
       cursor: pointer;
     }
     #${BUTTON_ID}:hover { background: #6421d6; }
+    #${WITHDRAWALS_BUTTON_ID} {
+      position: fixed;
+      right: 20px;
+      bottom: 80px;
+      z-index: 2147483000;
+      border: 0;
+      border-radius: 8px;
+      padding: 12px 16px;
+      background: #0f766e;
+      color: #fff;
+      font: 600 14px/1.2 Arial, sans-serif;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, .24);
+      cursor: pointer;
+    }
+    #${WITHDRAWALS_BUTTON_ID}:hover { background: #115e59; }
     #${ROOT_ID} {
       position: fixed;
       inset: 0;
@@ -75,6 +103,15 @@
       color: #1f2937;
     }
     #${ROOT_ID}.is-open { display: block; }
+    #${WITHDRAWALS_ROOT_ID} {
+      position: fixed;
+      inset: 0;
+      z-index: 2147483002;
+      display: none;
+      font: 14px/1.45 Arial, sans-serif;
+      color: #1f2937;
+    }
+    #${WITHDRAWALS_ROOT_ID}.is-open { display: block; }
     .wb-report-backdrop {
       position: absolute;
       inset: 0;
@@ -457,6 +494,16 @@
     document.body.appendChild(button);
   }
 
+  function createWithdrawalsButton() {
+    if (document.getElementById(WITHDRAWALS_BUTTON_ID)) return;
+    const button = document.createElement("button");
+    button.id = WITHDRAWALS_BUTTON_ID;
+    button.type = "button";
+    button.textContent = "🧾 Данные по заявкам";
+    button.addEventListener("click", openWithdrawalsModal);
+    document.body.appendChild(button);
+  }
+
   function createModal() {
     if (document.getElementById(ROOT_ID)) return;
 
@@ -521,13 +568,72 @@
     document.body.appendChild(root);
   }
 
+  function createWithdrawalsModal() {
+    if (document.getElementById(WITHDRAWALS_ROOT_ID)) return;
+
+    const today = formatDateInput(new Date());
+    const monthAgo = formatDateInput(addDays(new Date(), -30));
+    const root = document.createElement("div");
+    root.id = WITHDRAWALS_ROOT_ID;
+    root.innerHTML = `
+      <div class="wb-report-backdrop" data-action="close"></div>
+      <section class="wb-report-modal" role="dialog" aria-modal="true" aria-labelledby="wb-withdrawals-title">
+        <header class="wb-report-header">
+          <h2 class="wb-report-title" id="wb-withdrawals-title">Данные по заявкам <span class="wb-report-version">v${SCRIPT_VERSION}</span></h2>
+          <button class="wb-report-btn wb-report-close" type="button" data-action="close" title="Закрыть">×</button>
+        </header>
+        <div class="wb-report-controls">
+          <label class="wb-report-field">
+            supplierId
+            <input id="wb-withdrawals-supplier-id" type="text" value="${escapeHtml(withdrawalsState.supplierId || DEFAULT_SUPPLIER_ID)}" inputmode="numeric">
+          </label>
+          <label class="wb-report-field">
+            dateFrom
+            <input id="wb-withdrawals-date-from" type="date" value="${monthAgo}">
+          </label>
+          <label class="wb-report-field">
+            dateTo
+            <input id="wb-withdrawals-date-to" type="date" value="${today}">
+          </label>
+          <button class="wb-report-btn wb-report-btn-primary" type="button" id="wb-withdrawals-load">Загрузить</button>
+          <button class="wb-report-btn" type="button" id="wb-withdrawals-export" disabled>Экспорт CSV</button>
+          <span class="wb-report-status" id="wb-withdrawals-status"></span>
+        </div>
+        <main class="wb-report-content" id="wb-withdrawals-content">
+          <div class="wb-report-empty">Укажите supplierId и даты, затем загрузите заявки.</div>
+        </main>
+      </section>
+    `;
+
+    root.addEventListener("click", (event) => {
+      const target = event.target;
+      if (target && target.dataset && target.dataset.action === "close") closeWithdrawalsModal();
+    });
+    root.querySelector("#wb-withdrawals-load").addEventListener("click", loadWithdrawals);
+    root.querySelector("#wb-withdrawals-export").addEventListener("click", exportWithdrawalsCsv);
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && root.classList.contains("is-open")) closeWithdrawalsModal();
+    });
+    document.body.appendChild(root);
+  }
+
   function openModal() {
     createModal();
     document.getElementById(ROOT_ID).classList.add("is-open");
   }
 
+  function openWithdrawalsModal() {
+    createWithdrawalsModal();
+    document.getElementById(WITHDRAWALS_ROOT_ID).classList.add("is-open");
+  }
+
   function closeModal() {
     const root = document.getElementById(ROOT_ID);
+    if (root) root.classList.remove("is-open");
+  }
+
+  function closeWithdrawalsModal() {
+    const root = document.getElementById(WITHDRAWALS_ROOT_ID);
     if (root) root.classList.remove("is-open");
   }
 
@@ -649,6 +755,267 @@
     } finally {
       setDetailsDebugLoading(false);
     }
+  }
+
+  async function loadWithdrawals() {
+    const supplierId = String(document.getElementById("wb-withdrawals-supplier-id").value || "").trim();
+    const dateFrom = document.getElementById("wb-withdrawals-date-from").value;
+    const dateTo = document.getElementById("wb-withdrawals-date-to").value;
+
+    if (!supplierId) {
+      setWithdrawalsStatus("Укажите supplierId.");
+      return;
+    }
+    if (!dateFrom || !dateTo) {
+      setWithdrawalsStatus("Укажите dateFrom и dateTo.");
+      return;
+    }
+    if (dateFrom > dateTo) {
+      setWithdrawalsStatus("dateFrom не может быть позже dateTo.");
+      return;
+    }
+
+    withdrawalsState.supplierId = supplierId;
+    setWithdrawalsLoading(true);
+    setWithdrawalsStatus("Загружаю заявки...");
+
+    try {
+      const rows = await fetchAllWithdrawals({ supplierId, dateFrom, dateTo });
+      withdrawalsState.rows = rows.map(normalizeWithdrawal);
+      renderWithdrawals();
+      setWithdrawalsStatus(`Готово: ${formatNumber(withdrawalsState.rows.length)} заявок.`);
+    } catch (error) {
+      console.error("[WB Report] Withdrawals", error);
+      renderWithdrawalsEmpty(error && error.message ? error.message : "Не удалось загрузить заявки.");
+      setWithdrawalsStatus("Ошибка загрузки.");
+    } finally {
+      setWithdrawalsLoading(false);
+    }
+  }
+
+  async function fetchAllWithdrawals({ supplierId, dateFrom, dateTo }) {
+    const result = [];
+    let page = 1;
+    let pageField = "";
+    let offset = 0;
+    let token = "";
+    let hasNext = true;
+    const seenSignatures = new Set();
+
+    while (hasNext) {
+      setWithdrawalsStatus(`Загружаю страницу ${page}...`);
+      const response = await getWithdrawalsPage({ supplierId, dateFrom, dateTo, page, pageField, offset, token });
+      const rows = readArray(response, [
+        "data.withdrawals", "data.items", "data", "items", "withdrawals",
+        "result.data", "result.items",
+      ]);
+      const meta = readObject(response, [
+        "meta", "pagination", "data.meta", "result.meta", "result.pagination",
+      ]);
+      const signature = JSON.stringify(rows.slice(0, 5).map((row) => value(row, [
+        "id", "withdrawal_id", "withdrawalId", "request_id", "requestId", "number",
+      ])));
+
+      if (seenSignatures.has(signature) && rows.length) break;
+      if (signature !== "[]") seenSignatures.add(signature);
+      result.push(...rows);
+
+      const nextInfo = resolveWithdrawalsNextPage({ rows, meta, response, page, pageField, offset, token });
+      hasNext = nextInfo.hasNext;
+      page = nextInfo.page;
+      pageField = nextInfo.pageField;
+      offset = nextInfo.offset;
+      token = nextInfo.token;
+    }
+
+    return result;
+  }
+
+  async function getWithdrawalsPage({ supplierId, dateFrom, dateTo, page, pageField, offset, token }) {
+    const query = new URLSearchParams({
+      supplier_id: supplierId,
+      create_from: toApiDateStartOffset(dateFrom),
+      create_to: toApiDateEndOffset(dateTo),
+      page_size: String(PAGE_LIMIT),
+    });
+
+    if (token) query.set("page_token", token);
+    if (offset > 0) query.set("offset", String(offset));
+    if (pageField) query.set(pageField, String(page));
+
+    return requestJson("GET", `${WITHDRAWALS_API_URL}?${query.toString()}`);
+  }
+
+  function resolveWithdrawalsNextPage({ rows, meta, response, page, pageField, offset, token }) {
+    const explicitHasNext = pick(meta, ["has_next", "hasNext", "next"]) ?? pick(response, ["has_next", "hasNext"]);
+    const nextToken = pick(meta, ["next_page_token", "nextPageToken", "page_token", "pageToken"])
+      ?? pick(response, ["next_page_token", "nextPageToken", "page_token", "pageToken"]);
+
+    if (nextToken) {
+      return {
+        hasNext: true,
+        page,
+        pageField,
+        offset,
+        token: String(nextToken),
+      };
+    }
+
+    const currentPage = Number(
+      pick(meta, ["page", "page_number", "pageNumber", "current_page", "currentPage"])
+      ?? pick(response, ["page", "page_number", "pageNumber", "current_page", "currentPage"])
+      ?? page
+    ) || page;
+
+    const nextPage = Number(
+      pick(meta, ["next_page", "nextPage", "next_page_number", "nextPageNumber"])
+      ?? pick(response, ["next_page", "nextPage", "next_page_number", "nextPageNumber"])
+    );
+
+    if (Number.isFinite(nextPage) && nextPage > currentPage) {
+      return {
+        hasNext: true,
+        page: nextPage,
+        pageField: pageField || "page",
+        offset,
+        token: "",
+      };
+    }
+
+    const pageBasedHasNext = explicitHasNext === true || explicitHasNext === "true";
+    if (pageBasedHasNext || rows.length === PAGE_LIMIT) {
+      return {
+        hasNext: rows.length === PAGE_LIMIT || pageBasedHasNext,
+        page: currentPage + 1,
+        pageField: pageField || "page",
+        offset: offset + rows.length,
+        token: token || "",
+      };
+    }
+
+    return {
+      hasNext: false,
+      page,
+      pageField,
+      offset,
+      token,
+    };
+  }
+
+  function normalizeWithdrawal(item) {
+    return {
+      id: value(item, ["id", "withdrawal_id", "withdrawalId", "request_id", "requestId", "number"]),
+      createdAt: value(item, ["create_dt", "create_at", "createAt", "created_at", "createdAt", "created_date", "createdDate"]),
+      updatedAt: value(item, ["update_dt", "updated_at", "updatedAt", "status_dt", "statusAt"]),
+      status: value(item, ["status", "state", "withdrawal_status", "withdrawalStatus"]),
+      amount: numberValue(item, ["amount", "sum", "total", "value", "money.amount"]),
+      currency: value(item, ["currency", "money.currency", "amount_currency"]) || "RUB",
+      supplierId: value(item, ["supplier_id", "supplierId"]) || withdrawalsState.supplierId,
+      recipient: value(item, ["receiver", "recipient", "bank_details.recipient", "bankDetails.recipient", "bank_account_holder"]),
+      account: value(item, ["bank_account", "bankAccount", "bank_details.account", "bankDetails.account"]),
+      comment: value(item, ["comment", "description", "reason", "purpose"]),
+      raw: item,
+    };
+  }
+
+  function renderWithdrawals() {
+    const content = document.getElementById("wb-withdrawals-content");
+    if (!content) return;
+
+    if (!withdrawalsState.rows.length) {
+      renderWithdrawalsEmpty("За выбранный период заявки не найдены.");
+      setWithdrawalsExportEnabled(false);
+      return;
+    }
+
+    const totalAmount = sum(withdrawalsState.rows, "amount");
+    const statuses = withdrawalsState.rows.reduce((result, row) => {
+      const key = row.status || "Без статуса";
+      result[key] = (result[key] || 0) + 1;
+      return result;
+    }, {});
+
+    content.innerHTML = `
+      <div class="wb-report-summary">
+        ${renderStat("Заявки", formatNumber(withdrawalsState.rows.length))}
+        ${renderStat("Сумма", formatMoney(totalAmount))}
+        ${renderStat("supplierId", withdrawalsState.supplierId)}
+        ${renderStat("Статусы", formatNumber(Object.keys(statuses).length))}
+        ${renderStat("Первый статус", Object.keys(statuses)[0] || "—")}
+      </div>
+      <div class="wb-report-table-wrap">
+        <table class="wb-report-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Создано</th>
+              <th>Обновлено</th>
+              <th>Статус</th>
+              <th class="wb-report-num">Сумма</th>
+              <th>Получатель</th>
+              <th>Счет</th>
+              <th>Комментарий</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${withdrawalsState.rows.map((row) => `
+              <tr>
+                <td>${escapeHtml(row.id)}</td>
+                <td>${escapeHtml(formatDateTime(row.createdAt))}</td>
+                <td>${escapeHtml(formatDateTime(row.updatedAt))}</td>
+                <td>${escapeHtml(row.status)}</td>
+                <td class="wb-report-num">${escapeHtml(formatMoneyWithCurrency(row.amount, row.currency))}</td>
+                <td>${escapeHtml(row.recipient)}</td>
+                <td>${escapeHtml(row.account)}</td>
+                <td>${escapeHtml(row.comment)}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+    setWithdrawalsExportEnabled(true);
+  }
+
+  function renderWithdrawalsEmpty(message) {
+    const content = document.getElementById("wb-withdrawals-content");
+    if (!content) return;
+    content.innerHTML = `<div class="wb-report-empty">${escapeHtml(message)}</div>`;
+  }
+
+  function exportWithdrawalsCsv() {
+    if (!withdrawalsState.rows.length) return;
+
+    const lines = [];
+    lines.push(["ID", "Создано", "Обновлено", "Статус", "Сумма", "Валюта", "supplierId", "Получатель", "Счет", "Комментарий"]);
+    for (const row of withdrawalsState.rows) {
+      lines.push([
+        row.id,
+        formatDateTime(row.createdAt),
+        formatDateTime(row.updatedAt),
+        row.status,
+        decimal(row.amount),
+        row.currency,
+        row.supplierId,
+        row.recipient,
+        row.account,
+        row.comment,
+      ]);
+    }
+
+    const csv = "\uFEFF" + lines.map(toCsvLine).join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const dateFrom = document.getElementById("wb-withdrawals-date-from").value;
+    const dateTo = document.getElementById("wb-withdrawals-date-to").value;
+
+    link.href = url;
+    link.download = `wb-withdrawals-${withdrawalsState.supplierId}-${dateFrom}-${dateTo}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
   }
 
   async function fetchShipmentLoadingPointsDebug(row) {
@@ -971,9 +1338,13 @@
   }
 
   function postJson(url, payload) {
+    return requestJson("POST", url, payload);
+  }
+
+  function requestJson(method, url, payload) {
     return new Promise((resolve, reject) => {
       const request = {
-        method: "POST",
+        method,
         url,
         withCredentials: true,
         anonymous: false,
@@ -2015,6 +2386,11 @@
     if (status) status.textContent = message || "";
   }
 
+  function setWithdrawalsStatus(message) {
+    const status = document.getElementById("wb-withdrawals-status");
+    if (status) status.textContent = message || "";
+  }
+
   function setLoading(isLoading) {
     state.loading = isLoading;
     const loadButton = document.getElementById("wb-report-load");
@@ -2033,6 +2409,16 @@
     button.textContent = isLoading ? "Детали..." : "Собрать детали";
   }
 
+  function setWithdrawalsLoading(isLoading) {
+    withdrawalsState.loading = isLoading;
+    const loadButton = document.getElementById("wb-withdrawals-load");
+    if (loadButton) {
+      loadButton.disabled = isLoading;
+      loadButton.textContent = isLoading ? "Загрузка..." : "Загрузить";
+    }
+    setWithdrawalsExportEnabled(!isLoading && withdrawalsState.rows.length > 0);
+  }
+
   function setExportEnabled(enabled) {
     const exportButton = document.getElementById("wb-report-export");
     if (exportButton) exportButton.disabled = !enabled;
@@ -2040,6 +2426,11 @@
 
   function setDetailsDebugEnabled(enabled) {
     const button = document.getElementById("wb-report-details-debug");
+    if (button) button.disabled = !enabled;
+  }
+
+  function setWithdrawalsExportEnabled(enabled) {
+    const button = document.getElementById("wb-withdrawals-export");
     if (button) button.disabled = !enabled;
   }
 
@@ -2119,6 +2510,14 @@
     return `${date}T23:59:59.999Z`;
   }
 
+  function toApiDateStartOffset(date) {
+    return `${date}T00:00:00+03:00`;
+  }
+
+  function toApiDateEndOffset(date) {
+    return `${date}T23:59:59+03:00`;
+  }
+
   function addDays(date, days) {
     const copy = new Date(date);
     copy.setDate(copy.getDate() + days);
@@ -2150,12 +2549,18 @@
     }).format(Number(valueText) || 0);
   }
 
+<<<<<<< HEAD
   function formatPercent(valueText) {
     if (valueText === null || valueText === undefined || Number.isNaN(Number(valueText))) return "—";
     return `${new Intl.NumberFormat("ru-RU", {
       minimumFractionDigits: 1,
       maximumFractionDigits: 1,
     }).format((Number(valueText) || 0) * 100)}%`;
+=======
+  function formatMoneyWithCurrency(valueText, currency) {
+    const money = formatMoney(valueText);
+    return currency ? `${money} ${currency}` : money;
+>>>>>>> b3e4a7e (Add withdrawals request report)
   }
 
   function decimal(valueText) {
@@ -2179,6 +2584,7 @@
   function init() {
     injectStyle();
     createOpenButton();
+    createWithdrawalsButton();
   }
 
   installAuthCapture();
