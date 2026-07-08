@@ -707,12 +707,17 @@
     const deliveryTypes = countBy(packages, "delivery_type");
     const returnResults = countBy(packages, "return_result");
 
+    const loadedDeliveryPackagesCount = packages.filter(isLoadedDeliveryPackage).length;
+    const completedDeliveryPackagesCount = packages.filter(isCompletedDeliveryPackage).length;
+
     return {
       loadingPointsCount: loadingPoints.length,
       unloadingPointsCount: unloadingPoints.length,
       packagesCount: packages.length,
+      loadedDeliveryPackagesCount,
+      completedDeliveryPackagesCount,
       soldPackagesCount: packages.filter((item) => item.sell_result === "SELL_RESULT_SOLD").length,
-      deliveryPackagesCount: packages.filter((item) => item.courier_package_way_type === "COURIER_PACKAGE_WAY_TYPE_DELIVERY").length,
+      deliveryPackagesCount: completedDeliveryPackagesCount,
       returnPackagesCount: packages.filter(isPickedReturn).length,
       loadingAddresses,
       unloadingAddresses,
@@ -771,6 +776,26 @@
       item &&
       item.courier_package_way_type === "COURIER_PACKAGE_WAY_TYPE_RETURN" &&
       item.return_result === "RETURN_STATUS_PICKED"
+    );
+  }
+
+  function hasNonZeroDate(valueText) {
+    return Boolean(normalizeReportDate(valueText));
+  }
+
+  function isLoadedDeliveryPackage(item) {
+    return Boolean(
+      item &&
+      item.courier_package_way_type === "COURIER_PACKAGE_WAY_TYPE_DELIVERY" &&
+      hasNonZeroDate(item.loading_date)
+    );
+  }
+
+  function isCompletedDeliveryPackage(item) {
+    return Boolean(
+      isLoadedDeliveryPackage(item) &&
+      item.action_status === "ROUTE_POINT_ACTION_STATUS_DONE" &&
+      hasNonZeroDate(item.unloading_date)
     );
   }
 
@@ -1405,12 +1430,12 @@
     return rows.reduce((result, row) => {
       const detail = detailsById.get(String(row.id));
       const summary = detail && detail.summary ? detail.summary : {};
-      result.packages += detail ? Number(summary.packagesCount) || 0 : 0;
-      result.deliveryPackages += detail ? Number(summary.deliveryPackagesCount) || 0 : row.deliveries || 0;
+      result.loadedPackages += detail ? Number(summary.loadedDeliveryPackagesCount) || 0 : 0;
+      result.deliveryPackages += detail ? Number(summary.completedDeliveryPackagesCount ?? summary.deliveryPackagesCount) || 0 : row.deliveries || 0;
       result.returnPackages += detail ? Number(summary.returnPackagesCount) || 0 : row.returns || 0;
       return result;
     }, {
-      packages: 0,
+      loadedPackages: 0,
       deliveryPackages: 0,
       returnPackages: 0,
     });
@@ -1426,11 +1451,11 @@
 
   function buildTripMetrics(row, detail) {
     const summary = detail && detail.summary ? detail.summary : {};
-    const packagesCount = Number(summary.packagesCount) || 0;
+    const packagesCount = Number(summary.loadedDeliveryPackagesCount ?? summary.packagesCount) || 0;
     const soldPackagesCount = Number(summary.soldPackagesCount) || 0;
-    const deliveries = detail ? Number(summary.deliveryPackagesCount) || 0 : row.deliveries;
+    const deliveries = detail ? Number(summary.completedDeliveryPackagesCount ?? summary.deliveryPackagesCount) || 0 : row.deliveries;
     const returns = detail ? Number(summary.returnPackagesCount) || 0 : row.returns;
-    const conversion = packagesCount ? soldPackagesCount / packagesCount : null;
+    const conversion = packagesCount ? deliveries / packagesCount : null;
 
     return {
       packagesCount,
@@ -1668,8 +1693,8 @@
 
   function renderDriverSection(row, detailsById, isOpen) {
     const detailSummary = buildDriverDetailSummary(row.tripRows || [], detailsById);
-    const driverConversion = detailSummary.packages
-      ? detailSummary.deliveryPackages / detailSummary.packages
+    const driverConversion = detailSummary.loadedPackages
+      ? detailSummary.deliveryPackages / detailSummary.loadedPackages
       : null;
 
     return `
