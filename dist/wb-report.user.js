@@ -1185,11 +1185,11 @@
     });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
-    const dateFrom = document.getElementById("wb-withdrawals-date-from").value;
-    const dateTo = document.getElementById("wb-withdrawals-date-to").value;
+    const supplierName = sanitizeFilename(rows[0] && rows[0].supplierName ? rows[0].supplierName : withdrawalsState.supplierId);
+    const reportDate = formatDateInput(new Date());
 
     link.href = url;
-    link.download = `wb-services-${withdrawalsState.supplierId}-${dateFrom}-${dateTo}.xlsx`;
+    link.download = `${supplierName} ${reportDate}.xlsx`;
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -2791,6 +2791,14 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&apos;");
+  }
+
+  function sanitizeFilename(valueText) {
+    return String(valueText ?? "")
+      .trim()
+      .replace(/[\\/:*?"<>|]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim() || "report";
   }
 
   function buildXlsxBlob({ sheetName, headers, rows, numericColumns }) {
