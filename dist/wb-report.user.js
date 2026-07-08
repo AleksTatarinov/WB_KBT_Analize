@@ -55,6 +55,7 @@
     rows: [],
     loading: false,
     supplierId: DEFAULT_SUPPLIER_ID,
+    selectedIds: new Set(),
   };
   let capturedAuthHeaders = {};
   let capturedBodyTemplate = null;
@@ -374,6 +375,21 @@
       vertical-align: top;
       white-space: nowrap;
     }
+    .wb-report-table .wb-report-checkbox-col {
+      width: 44px;
+      min-width: 44px;
+      text-align: center;
+    }
+    .wb-report-table .wb-report-checkbox-col input {
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+    }
+    .wb-report-table .wb-report-text-wrap {
+      min-width: 220px;
+      white-space: normal;
+      word-break: break-word;
+    }
     .wb-report-table th {
       position: sticky;
       top: 0;
@@ -594,6 +610,9 @@
           </label>
           <button class="wb-report-btn wb-report-btn-primary" type="button" id="wb-withdrawals-load">Загрузить</button>
           <button class="wb-report-btn" type="button" id="wb-withdrawals-export" disabled>Экспорт CSV</button>
+          <button class="wb-report-btn" type="button" id="wb-withdrawals-export-xlsx" disabled>Экспорт XLSX</button>
+          <button class="wb-report-btn" type="button" id="wb-withdrawals-select-all" disabled>Отметить все</button>
+          <button class="wb-report-btn" type="button" id="wb-withdrawals-clear-selection" disabled>Снять выделение</button>
           <span class="wb-report-status" id="wb-withdrawals-status"></span>
         </div>
         <main class="wb-report-content" id="wb-withdrawals-content">
@@ -605,9 +624,18 @@
     root.addEventListener("click", (event) => {
       const target = event.target;
       if (target && target.dataset && target.dataset.action === "close") closeWithdrawalsModal();
+      if (target && target.id === "wb-withdrawals-select-all") setAllWithdrawalsSelected(true);
+      if (target && target.id === "wb-withdrawals-clear-selection") setAllWithdrawalsSelected(false);
+    });
+    root.addEventListener("change", (event) => {
+      const target = event.target;
+      if (target && target.dataset && target.dataset.withdrawalKey) {
+        toggleWithdrawalSelection(target.dataset.withdrawalKey, target.checked);
+      }
     });
     root.querySelector("#wb-withdrawals-load").addEventListener("click", loadWithdrawals);
     root.querySelector("#wb-withdrawals-export").addEventListener("click", exportWithdrawalsCsv);
+    root.querySelector("#wb-withdrawals-export-xlsx").addEventListener("click", exportWithdrawalsXlsx);
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && root.classList.contains("is-open")) closeWithdrawalsModal();
     });
@@ -780,6 +808,7 @@
       const rows = await fetchAllWithdrawals({ supplierId, dateFrom, dateTo });
       const normalizedRows = rows.map(normalizeWithdrawal);
       withdrawalsState.rows = await enrichWithdrawalsWithDetails(normalizedRows);
+      withdrawalsState.selectedIds = new Set();
       renderWithdrawals();
       setWithdrawalsStatus(`Готово: ${formatNumber(withdrawalsState.rows.length)} заявок.`);
     } catch (error) {
@@ -876,6 +905,29 @@
     const response = await requestJson("GET", `${WITHDRAWALS_DETAILS_API_URL}?${query.toString()}`);
     const detail = readObject(response, ["data", "result.data"]);
     return normalizeWithdrawal(detail);
+  }
+
+  function withdrawalKey(row) {
+    return String(row && (row.ropId || row.id || ""));
+  }
+
+  function getSelectedWithdrawals() {
+    if (!withdrawalsState.selectedIds.size) return [];
+    return withdrawalsState.rows.filter((row) => withdrawalsState.selectedIds.has(withdrawalKey(row)));
+  }
+
+  function toggleWithdrawalSelection(key, selected) {
+    if (!key) return;
+    if (selected) withdrawalsState.selectedIds.add(String(key));
+    else withdrawalsState.selectedIds.delete(String(key));
+    updateWithdrawalsSelectionControls();
+  }
+
+  function setAllWithdrawalsSelected(selected) {
+    withdrawalsState.selectedIds = selected
+      ? new Set(withdrawalsState.rows.map(withdrawalKey).filter(Boolean))
+      : new Set();
+    renderWithdrawals();
   }
 
   function resolveWithdrawalsNextPage({ rows, meta, response, page, pageField, offset, token }) {
@@ -1007,11 +1059,12 @@
         <table class="wb-report-table">
           <thead>
             <tr>
+              <th class="wb-report-checkbox-col"></th>
               <th>ID</th>
               <th>ROP</th>
               <th>Создано</th>
               <th>Статус</th>
-              <th>Комментарий статуса</th>
+              <th class="wb-report-text-wrap">Комментарий статуса</th>
               <th class="wb-report-num">Сумма</th>
               <th class="wb-report-num">Сумма без НДС</th>
               <th class="wb-report-num">Сумма с НДС база</th>
@@ -1026,11 +1079,12 @@
           <tbody>
             ${withdrawalsState.rows.map((row) => `
               <tr>
+                <td class="wb-report-checkbox-col"><input type="checkbox" data-withdrawal-key="${escapeHtml(withdrawalKey(row))}"${withdrawalsState.selectedIds.has(withdrawalKey(row)) ? " checked" : ""}></td>
                 <td>${escapeHtml(row.id)}</td>
                 <td>${escapeHtml(row.ropId)}</td>
                 <td>${escapeHtml(formatDateTime(row.createdAt))}</td>
                 <td>${escapeHtml(row.status)}</td>
-                <td>${escapeHtml(row.statusComment)}</td>
+                <td class="wb-report-text-wrap">${escapeHtml(row.statusComment)}</td>
                 <td class="wb-report-num">${escapeHtml(formatMoneyWithCurrency(row.amount, row.currency))}</td>
                 <td class="wb-report-num">${escapeHtml(formatMoney(row.amountTaxable))}</td>
                 <td class="wb-report-num">${escapeHtml(formatMoney(row.amountTaxableWithVat))}</td>
@@ -1047,6 +1101,7 @@
       </div>
     `;
     setWithdrawalsExportEnabled(true);
+    updateWithdrawalsSelectionControls();
   }
 
   function renderWithdrawalsEmpty(message) {
@@ -1103,6 +1158,38 @@
 
     link.href = url;
     link.download = `wb-withdrawals-${withdrawalsState.supplierId}-${dateFrom}-${dateTo}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function exportWithdrawalsXlsx() {
+    const rows = getSelectedWithdrawals();
+    if (!rows.length) {
+      setWithdrawalsStatus("Отметьте хотя бы одну заявку.");
+      return;
+    }
+
+    const sheetRows = rows.map((row) => ([
+      formatDateOnly(row.createdAt),
+      Number(row.amountTaxableWithVat) || 0,
+      `Оказание транспортных услуг по реестру №${row.ropId || row.id || ""}`,
+    ]));
+
+    const blob = buildXlsxBlob({
+      sheetName: "Услуги",
+      headers: ["Дата создания документа", "Сумма с НДС база", "Наименование услуги"],
+      rows: sheetRows,
+      numericColumns: new Set([1]),
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const dateFrom = document.getElementById("wb-withdrawals-date-from").value;
+    const dateTo = document.getElementById("wb-withdrawals-date-to").value;
+
+    link.href = url;
+    link.download = `wb-services-${withdrawalsState.supplierId}-${dateFrom}-${dateTo}.xlsx`;
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -2508,6 +2595,7 @@
       loadButton.textContent = isLoading ? "Загрузка..." : "Загрузить";
     }
     setWithdrawalsExportEnabled(!isLoading && withdrawalsState.rows.length > 0);
+    updateWithdrawalsSelectionControls();
   }
 
   function setExportEnabled(enabled) {
@@ -2523,6 +2611,17 @@
   function setWithdrawalsExportEnabled(enabled) {
     const button = document.getElementById("wb-withdrawals-export");
     if (button) button.disabled = !enabled;
+  }
+
+  function updateWithdrawalsSelectionControls() {
+    const hasRows = withdrawalsState.rows.length > 0;
+    const selectedCount = getSelectedWithdrawals().length;
+    const xlsxButton = document.getElementById("wb-withdrawals-export-xlsx");
+    const selectAllButton = document.getElementById("wb-withdrawals-select-all");
+    const clearButton = document.getElementById("wb-withdrawals-clear-selection");
+    if (xlsxButton) xlsxButton.disabled = withdrawalsState.loading || selectedCount === 0;
+    if (selectAllButton) selectAllButton.disabled = withdrawalsState.loading || !hasRows;
+    if (clearButton) clearButton.disabled = withdrawalsState.loading || selectedCount === 0;
   }
 
   function readArray(source, paths) {
@@ -2629,6 +2728,13 @@
     return date.toLocaleString("ru-RU");
   }
 
+  function formatDateOnly(valueText) {
+    if (!valueText) return "";
+    const date = new Date(valueText);
+    if (Number.isNaN(date.getTime())) return String(valueText);
+    return date.toLocaleDateString("ru-RU");
+  }
+
   function formatPeriod(fromValue, toValue) {
     const fromText = formatDateTime(fromValue);
     const toText = formatDateTime(toValue);
@@ -2676,6 +2782,214 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
+  }
+
+  function escapeXml(valueText) {
+    return String(valueText ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&apos;");
+  }
+
+  function buildXlsxBlob({ sheetName, headers, rows, numericColumns }) {
+    const files = new Map();
+    const nowIso = new Date().toISOString();
+    const safeSheetName = String(sheetName || "Sheet1").slice(0, 31);
+    const table = [headers, ...rows];
+    const lastColumn = excelColumnName(headers.length || 1);
+    const lastRow = table.length || 1;
+    const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    ${table.map((row, rowIndex) => `
+    <row r="${rowIndex + 1}">
+      ${row.map((cell, columnIndex) => {
+        const ref = `${excelColumnName(columnIndex + 1)}${rowIndex + 1}`;
+        if (rowIndex > 0 && numericColumns && numericColumns.has(columnIndex)) {
+          const numeric = Number(cell) || 0;
+          return `<c r="${ref}"><v>${numeric}</v></c>`;
+        }
+        return `<c r="${ref}" t="inlineStr"><is><t>${escapeXml(cell)}</t></is></c>`;
+      }).join("")}
+    </row>`).join("")}
+  </sheetData>
+</worksheet>`;
+
+    files.set("[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+  <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+  <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
+</Types>`);
+    files.set("_rels/.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>
+</Relationships>`);
+    files.set("docProps/app.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">
+  <Application>Microsoft Excel</Application>
+</Properties>`);
+    files.set("docProps/core.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <dc:creator>Codex</dc:creator>
+  <cp:lastModifiedBy>Codex</cp:lastModifiedBy>
+  <dcterms:created xsi:type="dcterms:W3CDTF">${nowIso}</dcterms:created>
+  <dcterms:modified xsi:type="dcterms:W3CDTF">${nowIso}</dcterms:modified>
+</cp:coreProperties>`);
+    files.set("xl/workbook.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="${escapeXml(safeSheetName)}" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>`);
+    files.set("xl/_rels/workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`);
+    files.set("xl/styles.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>
+  <fills count="1"><fill><patternFill patternType="none"/></fill></fills>
+  <borders count="1"><border/></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>`);
+    files.set("xl/worksheets/sheet1.xml", sheetXml);
+
+    return buildZipBlob(files);
+  }
+
+  function excelColumnName(index) {
+    let valueText = "";
+    let current = Number(index) || 1;
+    while (current > 0) {
+      const remainder = (current - 1) % 26;
+      valueText = String.fromCharCode(65 + remainder) + valueText;
+      current = Math.floor((current - 1) / 26);
+    }
+    return valueText;
+  }
+
+  function buildZipBlob(files) {
+    const encoder = new TextEncoder();
+    const entries = Array.from(files.entries()).map(([name, content]) => {
+      const nameBytes = encoder.encode(name);
+      const dataBytes = encoder.encode(content);
+      return {
+        name,
+        nameBytes,
+        dataBytes,
+        crc32: crc32(dataBytes),
+      };
+    });
+
+    let localOffset = 0;
+    const localParts = [];
+    const centralParts = [];
+
+    for (const entry of entries) {
+      const localHeader = createZipLocalHeader(entry.nameBytes, entry.dataBytes, entry.crc32);
+      localParts.push(localHeader, entry.nameBytes, entry.dataBytes);
+
+      const centralHeader = createZipCentralHeader(entry.nameBytes, entry.dataBytes, entry.crc32, localOffset);
+      centralParts.push(centralHeader, entry.nameBytes);
+
+      localOffset += localHeader.length + entry.nameBytes.length + entry.dataBytes.length;
+    }
+
+    const centralSize = centralParts.reduce((total, part) => total + part.length, 0);
+    const endRecord = createZipEndRecord(entries.length, centralSize, localOffset);
+    return new Blob([...localParts, ...centralParts, endRecord], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+  }
+
+  function createZipLocalHeader(nameBytes, dataBytes, crc) {
+    const buffer = new ArrayBuffer(30);
+    const view = new DataView(buffer);
+    view.setUint32(0, 0x04034b50, true);
+    view.setUint16(4, 20, true);
+    view.setUint16(6, 0, true);
+    view.setUint16(8, 0, true);
+    view.setUint16(10, 0, true);
+    view.setUint16(12, 0, true);
+    view.setUint32(14, crc >>> 0, true);
+    view.setUint32(18, dataBytes.length, true);
+    view.setUint32(22, dataBytes.length, true);
+    view.setUint16(26, nameBytes.length, true);
+    view.setUint16(28, 0, true);
+    return new Uint8Array(buffer);
+  }
+
+  function createZipCentralHeader(nameBytes, dataBytes, crc, offset) {
+    const buffer = new ArrayBuffer(46);
+    const view = new DataView(buffer);
+    view.setUint32(0, 0x02014b50, true);
+    view.setUint16(4, 20, true);
+    view.setUint16(6, 20, true);
+    view.setUint16(8, 0, true);
+    view.setUint16(10, 0, true);
+    view.setUint16(12, 0, true);
+    view.setUint16(14, 0, true);
+    view.setUint32(16, crc >>> 0, true);
+    view.setUint32(20, dataBytes.length, true);
+    view.setUint32(24, dataBytes.length, true);
+    view.setUint16(28, nameBytes.length, true);
+    view.setUint16(30, 0, true);
+    view.setUint16(32, 0, true);
+    view.setUint16(34, 0, true);
+    view.setUint16(36, 0, true);
+    view.setUint32(38, 0, true);
+    view.setUint32(42, offset, true);
+    return new Uint8Array(buffer);
+  }
+
+  function createZipEndRecord(entriesCount, centralSize, centralOffset) {
+    const buffer = new ArrayBuffer(22);
+    const view = new DataView(buffer);
+    view.setUint32(0, 0x06054b50, true);
+    view.setUint16(4, 0, true);
+    view.setUint16(6, 0, true);
+    view.setUint16(8, entriesCount, true);
+    view.setUint16(10, entriesCount, true);
+    view.setUint32(12, centralSize, true);
+    view.setUint32(16, centralOffset, true);
+    view.setUint16(20, 0, true);
+    return new Uint8Array(buffer);
+  }
+
+  let crc32TableCache = null;
+
+  function crc32(bytes) {
+    const table = getCrc32Table();
+    let crc = -1;
+    for (let index = 0; index < bytes.length; index += 1) {
+      crc = (crc >>> 8) ^ table[(crc ^ bytes[index]) & 0xff];
+    }
+    return (crc ^ -1) >>> 0;
+  }
+
+  function getCrc32Table() {
+    if (crc32TableCache) return crc32TableCache;
+    crc32TableCache = new Uint32Array(256);
+    for (let index = 0; index < 256; index += 1) {
+      let valueText = index;
+      for (let bit = 0; bit < 8; bit += 1) {
+        valueText = (valueText & 1) ? (0xedb88320 ^ (valueText >>> 1)) : (valueText >>> 1);
+      }
+      crc32TableCache[index] = valueText >>> 0;
+    }
+    return crc32TableCache;
   }
 
   function init() {
