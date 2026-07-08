@@ -25,6 +25,7 @@
   const ROOT_ID = "wb-report-root";
   const WITHDRAWALS_ROOT_ID = "wb-withdrawals-root";
   const WITHDRAWALS_API_URL = "https://drive.wb.ru/client-gateway/api/finance/credeber/v2/withdrawals";
+  const WITHDRAWALS_DETAILS_API_URL = "https://drive.wb.ru/client-gateway/api/finance/credeber/v2/withdrawals/details";
   const DEFAULT_SUPPLIER_ID = "4125748";
   const STATUS_LABELS = {
     ROUTE_POINT_ACTION_STATUS_DONE: "Выполнено",
@@ -777,7 +778,8 @@
 
     try {
       const rows = await fetchAllWithdrawals({ supplierId, dateFrom, dateTo });
-      withdrawalsState.rows = rows.map(normalizeWithdrawal);
+      const normalizedRows = rows.map(normalizeWithdrawal);
+      withdrawalsState.rows = await enrichWithdrawalsWithDetails(normalizedRows);
       renderWithdrawals();
       setWithdrawalsStatus(`Готово: ${formatNumber(withdrawalsState.rows.length)} заявок.`);
     } catch (error) {
@@ -842,6 +844,40 @@
     return requestJson("GET", `${WITHDRAWALS_API_URL}?${query.toString()}`);
   }
 
+  async function enrichWithdrawalsWithDetails(rows) {
+    const result = [];
+
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      if (!row.ropId) {
+        result.push(row);
+        continue;
+      }
+
+      setWithdrawalsStatus(`Загружаю детали заявок ${index + 1}/${rows.length}...`);
+
+      try {
+        const detail = await fetchWithdrawalDetails(row.ropId);
+        result.push({ ...row, ...detail });
+      } catch (error) {
+        console.warn("[WB Report] Withdrawal details", row.ropId, error);
+        result.push({
+          ...row,
+          detailsError: error && error.message ? error.message : String(error),
+        });
+      }
+    }
+
+    return result;
+  }
+
+  async function fetchWithdrawalDetails(ropId) {
+    const query = new URLSearchParams({ rop_id: String(ropId) });
+    const response = await requestJson("GET", `${WITHDRAWALS_DETAILS_API_URL}?${query.toString()}`);
+    const detail = readObject(response, ["data", "result.data"]);
+    return normalizeWithdrawal(detail);
+  }
+
   function resolveWithdrawalsNextPage({ rows, meta, response, page, pageField, offset, token }) {
     const explicitHasNext = pick(meta, ["has_next", "hasNext", "next"]) ?? pick(response, ["has_next", "hasNext"]);
     const nextToken = pick(meta, ["next_page_token", "nextPageToken", "page_token", "pageToken"])
@@ -901,15 +937,43 @@
   function normalizeWithdrawal(item) {
     return {
       id: value(item, ["id", "withdrawal_id", "withdrawalId", "request_id", "requestId", "number"]),
+      ropId: value(item, ["rop_id", "ropId"]),
       createdAt: value(item, ["create_dt", "create_at", "createAt", "created_at", "createdAt", "created_date", "createdDate"]),
       updatedAt: value(item, ["update_dt", "updated_at", "updatedAt", "status_dt", "statusAt"]),
-      status: value(item, ["status", "state", "withdrawal_status", "withdrawalStatus"]),
-      amount: numberValue(item, ["amount", "sum", "total", "value", "money.amount"]),
-      currency: value(item, ["currency", "money.currency", "amount_currency"]) || "RUB",
+      status: value(item, ["status_name", "statusName", "status", "state", "withdrawal_status", "withdrawalStatus"]),
+      statusCode: value(item, ["status", "state", "withdrawal_status", "withdrawalStatus"]),
+      statusComment: value(item, ["status_comment", "statusComment"]),
+      amount: numberValue(item, [
+        "amount_with_vat.value", "amountWithVat.value", "amount", "sum", "total", "value", "money.amount",
+      ]),
+      amountTaxable: numberValue(item, ["amount_taxable.value", "amountTaxable.value"]),
+      amountTaxableWithVat: numberValue(item, ["amount_taxable_with_vat.value", "amountTaxableWithVat.value"]),
+      amountCurrencyWithVat: numberValue(item, ["amount_currency_with_vat.value", "amountCurrencyWithVat.value"]),
+      currency: value(item, ["currency_name", "currencyName", "currency", "money.currency", "amount_currency"]) || "RUB",
+      currencyCode: value(item, ["currency_code", "currencyCode"]),
+      currencyRate: numberValue(item, ["currency_rate", "currencyRate"]),
       supplierId: value(item, ["supplier_id", "supplierId"]) || withdrawalsState.supplierId,
-      recipient: value(item, ["receiver", "recipient", "bank_details.recipient", "bankDetails.recipient", "bank_account_holder"]),
+      supplierName: value(item, ["supplier_name", "supplierName"]),
+      recipient: value(item, [
+        "receiver", "recipient", "bank_details.recipient", "bankDetails.recipient",
+        "bank_account_holder", "supplier_name", "supplierName",
+      ]),
       account: value(item, ["bank_account", "bankAccount", "bank_details.account", "bankDetails.account"]),
-      comment: value(item, ["comment", "description", "reason", "purpose"]),
+      vatName: value(item, ["vat_name", "vatName"]),
+      minDeliveryAt: value(item, ["min_delivery_dt", "minDeliveryDt"]),
+      maxDeliveryAt: value(item, ["max_delivery_dt", "maxDeliveryDt"]),
+      paymentOrderId: value(item, ["findep_data.findep_payment_order_id", "findepData.findepPaymentOrderId"]),
+      paymentOrderStatus: value(item, ["findep_data.findep_payment_order_status_id", "findepData.findepPaymentOrderStatusId"]),
+      paymentOrderStatusName: value(item, [
+        "findep_data.findep_payment_order_status_id_name",
+        "findepData.findepPaymentOrderStatusIdName",
+      ]),
+      paymentOrderStatusDescription: value(item, [
+        "findep_data.findep_payment_order_status_description",
+        "findepData.findepPaymentOrderStatusDescription",
+      ]),
+      paymentOrderDate: value(item, ["findep_data.findep_payment_order_date", "findepData.findepPaymentOrderDate"]),
+      comment: value(item, ["comment", "description", "reason", "purpose", "status"]),
       raw: item,
     };
   }
@@ -944,26 +1008,38 @@
           <thead>
             <tr>
               <th>ID</th>
+              <th>ROP</th>
               <th>Создано</th>
-              <th>Обновлено</th>
               <th>Статус</th>
+              <th>Комментарий статуса</th>
               <th class="wb-report-num">Сумма</th>
-              <th>Получатель</th>
-              <th>Счет</th>
-              <th>Комментарий</th>
+              <th class="wb-report-num">Сумма без НДС</th>
+              <th class="wb-report-num">Сумма с НДС база</th>
+              <th>Валюта</th>
+              <th>Ставка НДС</th>
+              <th>Период доставок</th>
+              <th>Поставщик</th>
+              <th>Статус платежки</th>
+              <th>Дата платежки</th>
             </tr>
           </thead>
           <tbody>
             ${withdrawalsState.rows.map((row) => `
               <tr>
                 <td>${escapeHtml(row.id)}</td>
+                <td>${escapeHtml(row.ropId)}</td>
                 <td>${escapeHtml(formatDateTime(row.createdAt))}</td>
-                <td>${escapeHtml(formatDateTime(row.updatedAt))}</td>
                 <td>${escapeHtml(row.status)}</td>
+                <td>${escapeHtml(row.statusComment)}</td>
                 <td class="wb-report-num">${escapeHtml(formatMoneyWithCurrency(row.amount, row.currency))}</td>
-                <td>${escapeHtml(row.recipient)}</td>
-                <td>${escapeHtml(row.account)}</td>
-                <td>${escapeHtml(row.comment)}</td>
+                <td class="wb-report-num">${escapeHtml(formatMoney(row.amountTaxable))}</td>
+                <td class="wb-report-num">${escapeHtml(formatMoney(row.amountTaxableWithVat))}</td>
+                <td>${escapeHtml(row.currency)}</td>
+                <td>${escapeHtml(row.vatName)}</td>
+                <td>${escapeHtml(formatPeriod(row.minDeliveryAt, row.maxDeliveryAt))}</td>
+                <td>${escapeHtml(row.supplierName || row.recipient)}</td>
+                <td>${escapeHtml(row.paymentOrderStatusName || row.statusCode)}</td>
+                <td>${escapeHtml(formatDateTime(row.paymentOrderDate))}</td>
               </tr>
             `).join("")}
           </tbody>
@@ -983,19 +1059,38 @@
     if (!withdrawalsState.rows.length) return;
 
     const lines = [];
-    lines.push(["ID", "Создано", "Обновлено", "Статус", "Сумма", "Валюта", "supplierId", "Получатель", "Счет", "Комментарий"]);
+    lines.push([
+      "ID", "ROP", "Создано", "Статус", "Код статуса", "Комментарий статуса",
+      "Сумма", "Сумма без НДС", "Сумма с НДС база", "Сумма в валюте",
+      "Валюта", "Код валюты", "Курс", "НДС", "supplierId", "Поставщик",
+      "Мин. доставка", "Макс. доставка", "Платежка ID", "Статус платежки",
+      "Код статуса платежки", "Описание статуса платежки", "Дата платежки",
+    ]);
     for (const row of withdrawalsState.rows) {
       lines.push([
         row.id,
+        row.ropId,
         formatDateTime(row.createdAt),
-        formatDateTime(row.updatedAt),
         row.status,
+        row.statusCode,
+        row.statusComment,
         decimal(row.amount),
+        decimal(row.amountTaxable),
+        decimal(row.amountTaxableWithVat),
+        decimal(row.amountCurrencyWithVat),
         row.currency,
+        row.currencyCode,
+        decimal(row.currencyRate),
+        row.vatName,
         row.supplierId,
-        row.recipient,
-        row.account,
-        row.comment,
+        row.supplierName || row.recipient,
+        formatDateTime(row.minDeliveryAt),
+        formatDateTime(row.maxDeliveryAt),
+        row.paymentOrderId,
+        row.paymentOrderStatusName,
+        row.paymentOrderStatus,
+        row.paymentOrderStatusDescription,
+        formatDateTime(row.paymentOrderDate),
       ]);
     }
 
@@ -2532,6 +2627,13 @@
     const date = new Date(valueText);
     if (Number.isNaN(date.getTime())) return String(valueText);
     return date.toLocaleString("ru-RU");
+  }
+
+  function formatPeriod(fromValue, toValue) {
+    const fromText = formatDateTime(fromValue);
+    const toText = formatDateTime(toValue);
+    if (fromText && toText) return `${fromText} - ${toText}`;
+    return fromText || toText || "";
   }
 
   function formatNumber(valueText) {
