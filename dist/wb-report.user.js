@@ -26,7 +26,6 @@
   const WITHDRAWALS_ROOT_ID = "wb-withdrawals-root";
   const WITHDRAWALS_API_URL = "https://drive.wb.ru/client-gateway/api/finance/credeber/v2/withdrawals";
   const WITHDRAWALS_DETAILS_API_URL = "https://drive.wb.ru/client-gateway/api/finance/credeber/v2/withdrawals/details";
-  const DEFAULT_SUPPLIER_ID = "4125748";
   const STATUS_LABELS = {
     ROUTE_POINT_ACTION_STATUS_DONE: "Выполнено",
     ROUTE_POINT_ACTION_STATUS_CANCELED: "Отменено",
@@ -54,12 +53,13 @@
   let withdrawalsState = {
     rows: [],
     loading: false,
-    supplierId: DEFAULT_SUPPLIER_ID,
+    supplierId: "",
     selectedIds: new Set(),
   };
   let capturedAuthHeaders = {};
   let capturedBodyTemplate = null;
   let workingPayloadBuilder = null;
+  let inferredSupplierId = "";
 
   const css = `
     #${BUTTON_ID} {
@@ -598,7 +598,7 @@
         <div class="wb-report-controls">
           <label class="wb-report-field">
             supplierId
-            <input id="wb-withdrawals-supplier-id" type="text" value="${escapeHtml(withdrawalsState.supplierId || DEFAULT_SUPPLIER_ID)}" inputmode="numeric">
+            <input id="wb-withdrawals-supplier-id" type="text" value="${escapeHtml(withdrawalsState.supplierId || detectCurrentSupplierId())}" inputmode="numeric" placeholder="Авто из текущего аккаунта">
           </label>
           <label class="wb-report-field">
             dateFrom
@@ -616,7 +616,7 @@
           <span class="wb-report-status" id="wb-withdrawals-status"></span>
         </div>
         <main class="wb-report-content" id="wb-withdrawals-content">
-          <div class="wb-report-empty">Укажите supplierId и даты, затем загрузите заявки.</div>
+          <div class="wb-report-empty">Укажите даты, supplierId подставится из текущего аккаунта автоматически.</div>
         </main>
       </section>
     `;
@@ -649,7 +649,10 @@
 
   function openWithdrawalsModal() {
     createWithdrawalsModal();
-    document.getElementById(WITHDRAWALS_ROOT_ID).classList.add("is-open");
+    const root = document.getElementById(WITHDRAWALS_ROOT_ID);
+    const supplierInput = root && root.querySelector("#wb-withdrawals-supplier-id");
+    if (supplierInput && !supplierInput.value) supplierInput.value = detectCurrentSupplierId();
+    if (root) root.classList.add("is-open");
   }
 
   function closeModal() {
@@ -783,12 +786,13 @@
   }
 
   async function loadWithdrawals() {
-    const supplierId = String(document.getElementById("wb-withdrawals-supplier-id").value || "").trim();
+    const supplierInput = document.getElementById("wb-withdrawals-supplier-id");
+    const supplierId = String((supplierInput && supplierInput.value) || detectCurrentSupplierId() || "").trim();
     const dateFrom = document.getElementById("wb-withdrawals-date-from").value;
     const dateTo = document.getElementById("wb-withdrawals-date-to").value;
 
     if (!supplierId) {
-      setWithdrawalsStatus("Укажите supplierId.");
+      setWithdrawalsStatus("Не удалось определить supplierId текущего аккаунта. Укажите его вручную.");
       return;
     }
     if (!dateFrom || !dateTo) {
@@ -801,6 +805,7 @@
     }
 
     withdrawalsState.supplierId = supplierId;
+    if (supplierInput) supplierInput.value = supplierId;
     setWithdrawalsLoading(true);
     setWithdrawalsStatus("Загружаю заявки...");
 
@@ -1660,6 +1665,7 @@
   }
 
   function rememberRequestBody(url, body) {
+    rememberSupplierIdFromUrl(url);
     if (!url || !String(url).includes("/shipments/finished/list") || !body) return;
 
     if (typeof body === "string") {
@@ -1672,6 +1678,7 @@
     }
     if (typeof body === "object" && !(body instanceof FormData) && !(body instanceof Blob)) {
       capturedBodyTemplate = cloneJson(body);
+      rememberSupplierIdFromObject(body);
       console.info("[WB Report] Найден шаблон payload от сайта", capturedBodyTemplate);
     }
   }
@@ -1680,6 +1687,7 @@
     if (!bodyText || typeof bodyText !== "string") return;
     try {
       capturedBodyTemplate = JSON.parse(bodyText);
+      rememberSupplierIdFromObject(capturedBodyTemplate);
       console.info("[WB Report] Найден шаблон payload от сайта", capturedBodyTemplate);
     } catch (error) {
       console.warn("[WB Report] Тело запроса найдено, но это не JSON", bodyText);
@@ -1713,6 +1721,118 @@
     ) {
       capturedAuthHeaders[name] = String(valueText);
     }
+  }
+
+  function detectCurrentSupplierId() {
+    if (withdrawalsState.supplierId) return withdrawalsState.supplierId;
+    if (inferredSupplierId) return inferredSupplierId;
+
+    rememberSupplierIdFromObject(capturedBodyTemplate);
+    if (inferredSupplierId) return inferredSupplierId;
+
+    const fromStorage = detectSupplierIdFromStorage(localStorage) || detectSupplierIdFromStorage(sessionStorage);
+    if (fromStorage) {
+      inferredSupplierId = fromStorage;
+      return inferredSupplierId;
+    }
+
+    return "";
+  }
+
+  function rememberSupplierIdFromUrl(url) {
+    if (!url) return;
+    try {
+      const parsed = new URL(String(url), location.origin);
+      const found = parsed.searchParams.get("supplier_id") || parsed.searchParams.get("supplierId");
+      if (isLikelySupplierId(found)) inferredSupplierId = String(found).trim();
+    } catch (error) {
+      const match = String(url).match(/[?&]supplier_(?:id)=([^&]+)/i);
+      if (match) {
+        const found = decodeURIComponent(match[1]);
+        if (isLikelySupplierId(found)) inferredSupplierId = String(found).trim();
+      }
+    }
+  }
+
+  function rememberSupplierIdFromObject(valueText) {
+    const found = extractSupplierIdFromUnknown(valueText);
+    if (isLikelySupplierId(found)) inferredSupplierId = String(found).trim();
+  }
+
+  function detectSupplierIdFromStorage(storage) {
+    if (!storage) return "";
+
+    const preferredKeys = [
+      "supplierId", "supplier_id", "selectedSupplierId", "selected_supplier_id",
+      "currentSupplierId", "current_supplier_id",
+    ];
+
+    for (const key of preferredKeys) {
+      const direct = storage.getItem(key);
+      if (isLikelySupplierId(direct)) return String(direct).trim();
+    }
+
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (!key) continue;
+      const raw = storage.getItem(key);
+      if (isLikelySupplierId(raw) && /(supplier|seller|vendor|cabinet|account)/i.test(key)) {
+        return String(raw).trim();
+      }
+      const extracted = extractSupplierIdFromRaw(raw);
+      if (extracted) return extracted;
+    }
+
+    return "";
+  }
+
+  function extractSupplierIdFromRaw(rawValue) {
+    if (!rawValue || typeof rawValue !== "string") return "";
+    const trimmed = rawValue.trim();
+    if (isLikelySupplierId(trimmed)) return trimmed;
+
+    try {
+      return extractSupplierIdFromUnknown(JSON.parse(trimmed));
+    } catch (error) {
+      const match = trimmed.match(/"(supplier_id|supplierId|selectedSupplierId|currentSupplierId)"\s*:\s*"?(?<id>\d{4,})"?/);
+      return match && match.groups && isLikelySupplierId(match.groups.id) ? match.groups.id : "";
+    }
+  }
+
+  function extractSupplierIdFromUnknown(source) {
+    if (!source || typeof source !== "object") return "";
+
+    const direct = value(source, [
+      "supplier_id", "supplierId", "selectedSupplierId", "selected_supplier_id",
+      "currentSupplierId", "current_supplier_id", "account.supplier_id", "account.supplierId",
+      "supplier.id", "supplierId.value",
+    ]);
+    if (isLikelySupplierId(direct)) return String(direct).trim();
+
+    if (Array.isArray(source)) {
+      for (const item of source) {
+        const nested = extractSupplierIdFromUnknown(item);
+        if (nested) return nested;
+      }
+      return "";
+    }
+
+    for (const key of Object.keys(source)) {
+      const fieldValue = source[key];
+      if (/(supplier|seller|vendor|cabinet|account)/i.test(key) && isLikelySupplierId(fieldValue)) {
+        return String(fieldValue).trim();
+      }
+      if (fieldValue && typeof fieldValue === "object") {
+        const nested = extractSupplierIdFromUnknown(fieldValue);
+        if (nested) return nested;
+      }
+    }
+
+    return "";
+  }
+
+  function isLikelySupplierId(valueText) {
+    return /^\d{4,}$/.test(String(valueText || "").trim());
   }
 
   function findAuthToken() {
