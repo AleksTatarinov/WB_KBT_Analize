@@ -1,11 +1,7 @@
 // ==UserScript==
 // @name         WB Logistics Finished Shipments Report
 // @namespace    https://logistics.wildberries.ru/
-<<<<<<< HEAD
-// @version      1.0.15
-=======
 // @version      1.1.0
->>>>>>> b3e4a7e (Add withdrawals request report)
 // @description  Отчет по завершенным рейсам WB Logistics с группировкой по водителям и экспортом CSV.
 // @author       Codex
 // @match        https://logistics.wildberries.ru/*
@@ -2549,18 +2545,17 @@
     }).format(Number(valueText) || 0);
   }
 
-<<<<<<< HEAD
   function formatPercent(valueText) {
     if (valueText === null || valueText === undefined || Number.isNaN(Number(valueText))) return "—";
     return `${new Intl.NumberFormat("ru-RU", {
       minimumFractionDigits: 1,
       maximumFractionDigits: 1,
     }).format((Number(valueText) || 0) * 100)}%`;
-=======
+  }
+
   function formatMoneyWithCurrency(valueText, currency) {
     const money = formatMoney(valueText);
     return currency ? `${money} ${currency}` : money;
->>>>>>> b3e4a7e (Add withdrawals request report)
   }
 
   function decimal(valueText) {
